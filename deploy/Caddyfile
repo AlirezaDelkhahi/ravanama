@@ -1,0 +1,38 @@
+{
+    on_demand_tls {
+        ask {$CADDY_ASK_URL:http://api:8080/internal/tls/allow}
+    }
+}
+
+(app_routes) {
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Frame-Options "DENY"
+    }
+
+    @internal path /internal /internal/*
+    handle @internal {
+        respond "Not Found" 404
+    }
+
+    @api path /api/v1 /api/v1/* /healthz
+    handle @api {
+        reverse_proxy api:8080
+    }
+
+    handle {
+        reverse_proxy web:3000
+    }
+}
+
+https:// {
+    tls {
+        on_demand
+    }
+    import app_routes
+}
+
+http://localhost, http://127.0.0.1, http://*.localhost {
+    import app_routes
+}

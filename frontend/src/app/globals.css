@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+:root {
+  /* === Surfaces (Warm Stone & Linen) === */
+  --bg-canvas: #FAF8F5;
+  --bg-surface: #FFFFFF;
+  --bg-subtle: #F2EFE9;
+  --bg-muted: #E7E2D8;
+
+  /* === Inks (Warm Charcoal & Slate-Moss) === */
+  --ink-primary: #1F2927;
+  --ink-secondary: #475551;
+  --ink-muted: #5E6965;
+
+  /* === Borders (Flat Editorial Separation) === */
+  --border-default: #E3DDD3;
+  --border-strong: #C5BDB0;
+
+  /* === Brand Accent (Botanical Sage-Teal) === */
+  --accent-primary: #2D6A62;
+  --accent-hover: #23554E;
+  --accent-tint: #E6F0EE;
+
+  /* === Semantic Status Tokens === */
+  --status-confirmed-bg: #E8F3EC;
+  --status-confirmed-ink: #1F5E3B;
+  --status-confirmed-border: #BBDAC7;
+
+  --status-pending-bg: #FDF3E7;
+  --status-pending-ink: #9A4D1A;
+  --status-pending-border: #F0D1AE;
+
+  --status-rejected-bg: #FBECEB;
+  --status-rejected-ink: #9E2F2B;
+  --status-rejected-border: #EBC2BF;
+
+  --status-info-bg: #EDF2F7;
+  --status-info-ink: #2E4D6B;
+  --status-info-border: #C7D6E4;
+
+  /* === Elevation (Strictly for Floating Layers — Never Flat Cards) === */
+  --shadow-sticky: 0 -4px 20px rgba(31, 41, 39, 0.06);
+  --shadow-popover: 0 12px 32px rgba(31, 41, 39, 0.10);
+}
+
+@theme {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-subtle: var(--bg-subtle);
+  --color-muted-surface: var(--bg-muted);
+
+  --color-ink: var(--ink-primary);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
+
+  --color-border: var(--border-default);
+  --color-border-strong: var(--border-strong);
+
+  --color-accent: var(--accent-primary);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-tint: var(--accent-tint);
+
+  --color-status-confirmed-bg: var(--status-confirmed-bg);
+  --color-status-confirmed-ink: var(--status-confirmed-ink);
+  --color-status-confirmed-border: var(--status-confirmed-border);
+
+  --color-status-pending-bg: var(--status-pending-bg);
+  --color-status-pending-ink: var(--status-pending-ink);
+  --color-status-pending-border: var(--status-pending-border);
+
+  --color-status-rejected-bg: var(--status-rejected-bg);
+  --color-status-rejected-ink: var(--status-rejected-ink);
+  --color-status-rejected-border: var(--status-rejected-border);
+
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-info-ink: var(--status-info-ink);
+  --color-status-info-border: var(--status-info-border);
+
+  --font-sans: var(--font-vazirmatn), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-peyda, var(--font-vazirmatn)), ui-sans-serif, sans-serif;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

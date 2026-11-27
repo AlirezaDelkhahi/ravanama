@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Next.js build & test outputs
+frontend/.next/
+frontend/out/
+frontend/coverage/
+*.tsbuildinfo
+frontend/next-env.d.ts
+
+# Go build & test artifacts
+*.test
+*.out
+coverage.txt
+backend/bin/
+backend/api
+
+# Local environment files (never ignore .env.example)
+.env
+.env.local
+.env.*.local
+
+# OS & Editor metadata
+.DS_Store
+.idea/
+.vscode/
