@@ -70,6 +70,7 @@ services:
       PORT: "8080"
       DATABASE_URL: ${DATABASE_URL:-postgres://ravannama:ravannama_local_dev_pw@postgres:5432/ravannama?sslmode=disable}
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:8088}
       S3_REGION: ${S3_REGION:-ir-thr-at1}
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_local_dev}
@@ -77,6 +78,11 @@ services:
       S3_PRIVATE_BUCKET: ${S3_PRIVATE_BUCKET:-ravannama-private}
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-ravannama.ir}
       OTP_PEPPER: ${OTP_PEPPER:-local-dev-otp-pepper-change-in-prod-32b}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
+      SEED_PILOT_DATA: ${SEED_PILOT_DATA:-true}
+      DEV_OTP_SINK_FILE: ${DEV_OTP_SINK_FILE:-/tmp/ravanama-dev-otp.json}
     ports:
       - "127.0.0.1:${API_PORT:-8080}:8080"
     healthcheck:

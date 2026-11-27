@@ -55,21 +55,44 @@ type CreateReviewRequest struct {
 // ContentService defines SEO blog and verified review workflows.
 type ContentService interface {
 	ListPublishedPosts(ctx context.Context, therapistID string) ([]BlogPost, error)
+	ListAllByTherapist(ctx context.Context, therapistID string) ([]BlogPost, error)
 	GetPublishedPostBySlug(ctx context.Context, therapistID string, slug string) (*BlogPost, error)
 	UpsertPost(ctx context.Context, post BlogPost) (*BlogPost, error)
 	CreateReview(ctx context.Context, req CreateReviewRequest) (*Review, error)
 	ListPublishedReviews(ctx context.Context, therapistID string) ([]Review, error)
+	HasReviewForBooking(ctx context.Context, bookingID string) (bool, error)
 }
 
 // BlogRepository persists content.blog_posts records.
 type BlogRepository interface {
+	GetByID(ctx context.Context, id string) (*BlogPost, error)
 	ListPublishedByTherapist(ctx context.Context, therapistID string) ([]BlogPost, error)
+	ListAllByTherapist(ctx context.Context, therapistID string) ([]BlogPost, error)
 	GetPublishedBySlug(ctx context.Context, therapistID string, slug string) (*BlogPost, error)
 	Upsert(ctx context.Context, post BlogPost) (*BlogPost, error)
 }
 
+// CompletedBookingInfo captures booking ownership and completion status for review gating.
+type CompletedBookingInfo struct {
+	BookingID    string
+	TherapistID  string
+	ClientUserID string
+	IsCompleted  bool
+}
+
+// CompletedBookingChecker verifies that a booking is completed and owned by the reviewer.
+type CompletedBookingChecker interface {
+	GetBookingForReview(ctx context.Context, bookingID string) (*CompletedBookingInfo, error)
+}
+
 // ReviewRepository persists content.reviews records.
 type ReviewRepository interface {
+	GetByBookingID(ctx context.Context, bookingID string) (*Review, error)
 	Create(ctx context.Context, review Review) (*Review, error)
 	ListPublishedByTherapist(ctx context.Context, therapistID string) ([]Review, error)
+}
+
+// Clock provides current timestamps for posts and reviews.
+type Clock interface {
+	Now() time.Time
 }

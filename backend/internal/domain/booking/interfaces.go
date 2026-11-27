@@ -112,24 +112,61 @@ type RejectBookingRequest struct {
 	RejectionReason string
 }
 
+// HoldResult returns the held booking alongside track-scoped therapist payment destinations.
+type HoldResult struct {
+	Booking         Booking
+	PaymentAccounts []PaymentDestination
+}
+
+// OfferingSnapshot captures immutable pricing/duration metadata from scheduling.
+type OfferingSnapshot struct {
+	ID          string
+	TherapistID string
+	Track       string
+	DurationMin int16
+	Currency    string
+	PriceAmount int64
+	IsActive    bool
+}
+
+// PaymentDestination represents a track-scoped manual payment account revealed only after hold.
+type PaymentDestination struct {
+	ID             string
+	Track          string
+	Method         string
+	AccountLabel   string
+	DestinationVal string
+	HolderName     string
+}
+
+// MediaObjectSnapshot captures verified private receipt ownership and confirmation status.
+type MediaObjectSnapshot struct {
+	ID          string
+	OwnerUserID string
+	BucketKind  string
+	Status      string
+}
+
 // BookingService defines booking hold, receipt verification, approval, rejection, and expiry workflows.
 type BookingService interface {
-	CreateHold(ctx context.Context, req HoldRequest) (*Booking, error)
+	CreateHold(ctx context.Context, req HoldRequest) (*HoldResult, error)
 	SubmitReceipt(ctx context.Context, req SubmitReceiptRequest) (*Booking, error)
 	ApproveBooking(ctx context.Context, req ApproveBookingRequest) (*Booking, error)
 	RejectBooking(ctx context.Context, req RejectBookingRequest) (*Booking, error)
 	ExpireStaleHolds(ctx context.Context, now time.Time) (int, error)
 	GetBookingForClient(ctx context.Context, bookingID string, clientUserID string) (*Booking, error)
+	GetBookingReceiptForActor(ctx context.Context, bookingID string, actorUserID string, actorTherapistID string) (*BookingReceipt, error)
 	ListTherapistBookings(ctx context.Context, therapistID string, status *BookingStatus) ([]Booking, error)
 	ListClientBookings(ctx context.Context, clientUserID string) ([]Booking, error)
 }
 
 // BookingRepository persists and locks bookings, receipts, and status audit events.
 type BookingRepository interface {
+	AcquireClientHoldLock(ctx context.Context, clientUserID string) error
 	FindByIdempotencyKey(ctx context.Context, clientUserID string, idempotencyKey string) (*Booking, error)
 	GetByID(ctx context.Context, id string) (*Booking, error)
 	GetByIDForUpdate(ctx context.Context, id string) (*Booking, error)
-	CountActiveHoldsByClientAndTherapist(ctx context.Context, clientUserID string, therapistID string) (int, error)
+	CountActiveHoldsByClientAndTherapist(ctx context.Context, clientUserID string, therapistID string, now time.Time) (int, error)
 	CreateHold(ctx context.Context, b Booking) (*Booking, error)
 	UpdateStatus(ctx context.Context, id string, status BookingStatus, rejectionReason *string, callJoinURL *string, updatedAt time.Time) error
 	CreateReceipt(ctx context.Context, receipt BookingReceipt) error
@@ -138,6 +175,33 @@ type BookingRepository interface {
 	ExpireStaleHoldsBatch(ctx context.Context, cutoff time.Time, limit int) (int, error)
 	ListByTherapist(ctx context.Context, therapistID string, status *BookingStatus) ([]Booking, error)
 	ListByClient(ctx context.Context, clientUserID string) ([]Booking, error)
+}
+
+// OfferingLookupPort retrieves offering metadata without importing scheduling internals.
+type OfferingLookupPort interface {
+	GetOffering(ctx context.Context, id string) (*OfferingSnapshot, error)
+}
+
+// PaymentAccountLookupPort retrieves therapist payment accounts without importing tenant internals.
+type PaymentAccountLookupPort interface {
+	ListActiveDestinations(ctx context.Context, therapistID string, track string) ([]PaymentDestination, error)
+}
+
+// MediaLookupPort verifies receipt media object state without importing media internals.
+type MediaLookupPort interface {
+	GetMediaObject(ctx context.Context, id string) (*MediaObjectSnapshot, error)
+}
+
+// BookingNotifierPort sends strictly post-commit booking lifecycle notifications.
+type BookingNotifierPort interface {
+	NotifyReceiptSubmitted(ctx context.Context, b Booking) error
+	NotifyBookingApproved(ctx context.Context, b Booking) error
+	NotifyBookingRejected(ctx context.Context, b Booking) error
+}
+
+// Clock provides current timestamps for hold TTL and audit events.
+type Clock interface {
+	Now() time.Time
 }
 
 // TxManager executes booking workflows inside an atomic database transaction.

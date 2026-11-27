@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   formatJalaliKey,
   formatJalaliLong,
@@ -40,6 +40,11 @@ export function JalaliCalendar({
 }: JalaliCalendarProps) {
   const [viewYear, setViewYear] = useState(initialYear);
   const [viewMonth, setViewMonth] = useState(initialMonth);
+
+  useEffect(() => {
+    setViewYear(initialYear);
+    setViewMonth(initialMonth);
+  }, [initialYear, initialMonth]);
 
   const monthLength = getJalaliMonthLength(viewYear, viewMonth);
   const firstWeekdaySat0 = getJalaliMonthFirstWeekdaySat0(viewYear, viewMonth);

@@ -3,6 +3,8 @@ import { MySessionsClient } from "@/components/portal/MySessionsClient";
 import { SiteFooter } from "@/components/ui/SiteFooter";
 import { SiteHeader } from "@/components/ui/SiteHeader";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "پیگیری نوبت‌ها",
   description:

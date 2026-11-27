@@ -18,7 +18,12 @@ import {
 import { SiteFooter } from "@/components/ui/SiteFooter";
 import { SiteHeader } from "@/components/ui/SiteHeader";
 import { formatCurrency, toPersianDigits } from "@/lib/jalali";
-import { getDirectoryTherapists, getTherapistBySlug } from "@/lib/mock-data";
+import {
+  fetchDirectoryTherapists,
+  fetchTherapistCatalog,
+} from "@/lib/server-api";
+
+export const dynamic = "force-dynamic";
 
 const QUICK_TOPIC_PILLS = [
   { label: "اضطراب و استرس", topic: "اضطراب" },
@@ -51,9 +56,11 @@ const FAQ_ITEMS = [
   },
 ] as const;
 
-export default function PlatformHomePage() {
-  const directoryTherapists = getDirectoryTherapists();
-  const sara = getTherapistBySlug("dr-sara-ahmadi");
+export default async function PlatformHomePage() {
+  const [directoryTherapists, sara] = await Promise.all([
+    fetchDirectoryTherapists(),
+    fetchTherapistCatalog("dr-sara-ahmadi"),
+  ]);
   const journalPosts = (sara?.blogPosts ?? [])
     .filter((p) => p.status === "published")
     .slice(0, 3);

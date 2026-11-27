@@ -40,6 +40,8 @@ func TestNewRedactingLogger_MasksSensitiveFieldsAndNestedGroups(t *testing.T) {
 		"203.0.113.42",
 		"6037997100001111",
 		"1111",
+		"private-clinical-note-secret",
+		"TRK-99887766",
 	}
 
 	logger.Info("sensitive payload check",
@@ -58,6 +60,8 @@ func TestNewRedactingLogger_MasksSensitiveFieldsAndNestedGroups(t *testing.T) {
 		slog.String("token_hash", secrets[21]),
 		slog.String("code_hmac", secrets[22]),
 		slog.String("client_ip", secrets[23]),
+		slog.String("client_note", secrets[26]),
+		slog.String("tracking_code", secrets[27]),
 		slog.String("non_secret", "visible-value"),
 		slog.Group("nested",
 			slog.String("destination_val", secrets[10]),

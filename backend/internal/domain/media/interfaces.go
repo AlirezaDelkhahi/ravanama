@@ -75,7 +75,22 @@ type ObjectMetadata struct {
 type MediaService interface {
 	PresignReceiptUpload(ctx context.Context, req PresignReceiptRequest) (*PresignReceiptResult, error)
 	ConfirmReceiptUpload(ctx context.Context, ownerUserID string, mediaObjectID string) (*MediaObject, error)
-	MintReceiptDownloadURL(ctx context.Context, mediaObjectID string, ttl time.Duration) (string, error)
+	MintReceiptDownloadURL(ctx context.Context, actorUserID string, mediaObjectID string, ttl time.Duration) (string, error)
+}
+
+// HeldBookingChecker verifies a caller holds an active unexpired booking before issuing upload URLs.
+type HeldBookingChecker interface {
+	HasActiveHeldBooking(ctx context.Context, bookingID string, ownerUserID string, now time.Time) (bool, error)
+}
+
+// ReceiptAccessChecker verifies whether actorUserID (client or owning therapist) may view a receipt.
+type ReceiptAccessChecker interface {
+	CanAccessReceipt(ctx context.Context, mediaObjectID string, actorUserID string) (bool, error)
+}
+
+// Clock provides current timestamps for presign and confirmation records.
+type Clock interface {
+	Now() time.Time
 }
 
 // ObjectStoragePort abstracts S3-compatible object storage operations.

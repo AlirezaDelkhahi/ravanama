@@ -90,12 +90,21 @@ type VerifyOTPResult struct {
 	SessionToken string
 }
 
+// ClientContactSummary exposes verified client contact metadata strictly to authorized therapists/admins.
+type ClientContactSummary struct {
+	UserID    string
+	FullName  string
+	PhoneE164 *string
+	Email     *string
+}
+
 // AuthService defines identity authentication and session operations.
 type AuthService interface {
 	IssueOTP(ctx context.Context, req IssueOTPRequest) error
 	VerifyOTP(ctx context.Context, req VerifyOTPRequest) (*VerifyOTPResult, error)
 	AuthenticateSession(ctx context.Context, rawToken string) (*User, *Session, error)
 	RevokeSession(ctx context.Context, sessionID string) error
+	GetClientContactSummary(ctx context.Context, actorRole Role, userID string) (*ClientContactSummary, error)
 }
 
 // UserRepository persists and retrieves identity.users records.
@@ -109,8 +118,8 @@ type UserRepository interface {
 // OTPChallengeRepository persists and verifies OTP challenges.
 type OTPChallengeRepository interface {
 	Create(ctx context.Context, challenge OTPChallenge) error
-	GetLatestActive(ctx context.Context, destination string, purpose OTPPurpose) (*OTPChallenge, error)
-	IncrementAttempts(ctx context.Context, id string) error
+	GetLatestActive(ctx context.Context, destination string, channel Channel, purpose OTPPurpose) (*OTPChallenge, error)
+	IncrementAttempts(ctx context.Context, id string) (int16, error)
 	MarkConsumed(ctx context.Context, id string, consumedAt time.Time) error
 }
 
@@ -129,4 +138,9 @@ type RateLimiterPort interface {
 // NotifierPort sends OTP codes and transactional alerts via SMS or email.
 type NotifierPort interface {
 	SendOTP(ctx context.Context, channel Channel, destination string, code string, purpose OTPPurpose) error
+}
+
+// Clock provides the current timestamp for deterministic TTL checks.
+type Clock interface {
+	Now() time.Time
 }

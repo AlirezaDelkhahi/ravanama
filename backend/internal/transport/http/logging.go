@@ -29,6 +29,8 @@ var sensitiveLogKeys = map[string]struct{}{
 	"download_url":    {},
 	"call_join_url":   {},
 	"client_ip":       {},
+	"client_note":     {},
+	"tracking_code":   {},
 	"password":        {},
 	"secret":          {},
 }

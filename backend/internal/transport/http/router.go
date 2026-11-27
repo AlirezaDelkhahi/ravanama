@@ -7,6 +7,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ravannama/ravannama/backend/internal/domain/booking"
+	"github.com/ravannama/ravannama/backend/internal/domain/content"
+	"github.com/ravannama/ravannama/backend/internal/domain/identity"
+	"github.com/ravannama/ravannama/backend/internal/domain/media"
+	"github.com/ravannama/ravannama/backend/internal/domain/scheduling"
 	"github.com/ravannama/ravannama/backend/internal/domain/tenant"
 )
 
@@ -15,6 +20,14 @@ type Dependencies struct {
 	Logger           *slog.Logger
 	PlatformDomain   string
 	TLSDomainChecker tenant.TLSDomainChecker
+	Identity         identity.AuthService
+	Tenant           tenant.TenantService
+	Scheduling       scheduling.SchedulingService
+	Booking          booking.BookingService
+	Media             media.MediaService
+	Content           content.ContentService
+	CookieSecure      bool
+	TrustProxyHeaders bool
 }
 
 // NewHandler wires HTTP endpoints behind panic recovery and safe request logging.
@@ -23,11 +36,71 @@ func NewHandler(deps Dependencies) http.Handler {
 	if logger == nil {
 		logger = NewRedactingLogger(io.Discard, slog.LevelInfo)
 	}
+	deps.Logger = logger
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /api/v1/health", handleHealth)
 	mux.HandleFunc("GET /internal/tls/allow", internalTLSHandler(deps.PlatformDomain, deps.TLSDomainChecker, logger))
+
+	if deps.Identity != nil {
+		mux.HandleFunc("POST /api/v1/auth/otp/issue", handleIssueOTP(deps))
+		mux.HandleFunc("POST /api/v1/auth/otp/verify", handleVerifyOTP(deps))
+		mux.HandleFunc("GET /api/v1/auth/me", handleAuthMe(deps))
+		mux.HandleFunc("POST /api/v1/auth/logout", handleLogout(deps))
+	}
+
+	if deps.Tenant != nil {
+		mux.HandleFunc("GET /api/v1/tenants/resolve", handleResolveTenantHost(deps))
+		mux.HandleFunc("GET /api/v1/therapists", handleListDirectoryTherapists(deps))
+		mux.HandleFunc("GET /api/v1/therapists/{slug}", handleGetTherapistCatalog(deps))
+		if deps.Scheduling != nil {
+			mux.HandleFunc("GET /api/v1/therapists/{slug}/slots", handleGenerateSlots(deps))
+		}
+		if deps.Content != nil {
+			mux.HandleFunc("GET /api/v1/therapists/{slug}/blog", handleListTherapistBlog(deps))
+			mux.HandleFunc("GET /api/v1/therapists/{slug}/blog/{post}", handleGetTherapistBlogPost(deps))
+		}
+
+		// Therapist dashboard profile, domains, payouts, schedule, blog
+		mux.HandleFunc("GET /api/v1/dashboard/profile", handleDashboardGetProfile(deps))
+		mux.HandleFunc("PUT /api/v1/dashboard/profile", handleDashboardUpdateProfile(deps))
+		mux.HandleFunc("POST /api/v1/dashboard/payment-accounts", handleDashboardUpsertPaymentAccount(deps))
+		mux.HandleFunc("POST /api/v1/dashboard/domains", handleDashboardRegisterDomain(deps))
+		mux.HandleFunc("POST /api/v1/dashboard/domains/{id}/verify", handleDashboardVerifyDomain(deps))
+
+		if deps.Scheduling != nil {
+			mux.HandleFunc("GET /api/v1/dashboard/schedule", handleDashboardGetSchedule(deps))
+			mux.HandleFunc("PUT /api/v1/dashboard/schedule/rules", handleDashboardSetWeeklyRules(deps))
+			mux.HandleFunc("POST /api/v1/dashboard/schedule/overrides", handleDashboardUpsertOverride(deps))
+			mux.HandleFunc("POST /api/v1/dashboard/offerings", handleDashboardUpsertOffering(deps))
+		}
+		if deps.Content != nil {
+			mux.HandleFunc("GET /api/v1/dashboard/blog", handleDashboardListBlog(deps))
+			mux.HandleFunc("POST /api/v1/dashboard/blog", handleDashboardUpsertBlog(deps))
+		}
+	}
+
+	if deps.Booking != nil {
+		mux.HandleFunc("POST /api/v1/bookings/hold", handleCreateBookingHold(deps))
+		mux.HandleFunc("POST /api/v1/bookings/{id}/receipt", handleSubmitBookingReceipt(deps))
+		mux.HandleFunc("GET /api/v1/bookings/me", handleListClientBookings(deps))
+		mux.HandleFunc("GET /api/v1/bookings/{id}", handleGetClientBooking(deps))
+		mux.HandleFunc("GET /api/v1/bookings/{id}/receipt-url", handleGetBookingReceiptURL(deps))
+		if deps.Content != nil {
+			mux.HandleFunc("POST /api/v1/bookings/{id}/review", handleCreateBookingReview(deps))
+		}
+		if deps.Tenant != nil {
+			mux.HandleFunc("GET /api/v1/dashboard/bookings", handleDashboardListBookings(deps))
+			mux.HandleFunc("POST /api/v1/dashboard/bookings/{id}/approve", handleDashboardApproveBooking(deps))
+			mux.HandleFunc("POST /api/v1/dashboard/bookings/{id}/reject", handleDashboardRejectBooking(deps))
+		}
+	}
+
+	if deps.Media != nil {
+		mux.HandleFunc("POST /api/v1/media/receipts/presign", handlePresignReceiptUpload(deps))
+		mux.HandleFunc("POST /api/v1/media/receipts/confirm", handleConfirmReceiptUpload(deps))
+	}
 
 	return loggingMiddleware(logger, recoverMiddleware(logger, mux))
 }

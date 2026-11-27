@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { TherapistsDirectoryClient } from "@/components/directory/TherapistsDirectoryClient";
 import { SiteFooter } from "@/components/ui/SiteFooter";
 import { SiteHeader } from "@/components/ui/SiteHeader";
-import { getDirectoryTherapists } from "@/lib/mock-data";
+import { fetchDirectoryTherapists } from "@/lib/server-api";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "فهرست درمانگران روان‌نما",
@@ -18,7 +20,7 @@ export default async function TherapistsDirectoryPage({
   searchParams,
 }: TherapistsDirectoryPageProps) {
   const { topic } = await searchParams;
-  const therapists = getDirectoryTherapists();
+  const therapists = await fetchDirectoryTherapists();
 
   return (
     <>

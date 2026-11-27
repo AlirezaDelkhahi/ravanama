@@ -59,13 +59,27 @@ type AvailableSlot struct {
 	EndAt          time.Time
 	Track          string
 	ClientTimezone string
+	TehranStart    time.Time
+	TehranEnd      time.Time
+	ClientStart    time.Time
+	ClientEnd      time.Time
+	TehranLabel    string
+	ClientLabel    string
+}
+
+// BusySlot represents an existing active booking interval blocking availability.
+type BusySlot struct {
+	StartAt time.Time
+	EndAt   time.Time
 }
 
 // SchedulingService defines offerings, availability configuration, and slot generation.
 type SchedulingService interface {
 	ListActiveOfferings(ctx context.Context, therapistID string, track string) ([]ServiceOffering, error)
 	UpsertOffering(ctx context.Context, offering ServiceOffering) (*ServiceOffering, error)
+	ListWeeklyRules(ctx context.Context, therapistID string) ([]WeeklyAvailabilityRule, error)
 	SetWeeklyRules(ctx context.Context, therapistID string, rules []WeeklyAvailabilityRule) error
+	ListOverrides(ctx context.Context, therapistID string, from time.Time, to time.Time) ([]AvailabilityOverride, error)
 	UpsertOverride(ctx context.Context, override AvailabilityOverride) (*AvailabilityOverride, error)
 	GenerateSlots(ctx context.Context, therapistID string, offeringID string, from time.Time, to time.Time, clientTimezone string) ([]AvailableSlot, error)
 }
@@ -85,6 +99,22 @@ type WeeklyRuleRepository interface {
 
 // OverrideRepository persists scheduling.availability_overrides records.
 type OverrideRepository interface {
+	GetByID(ctx context.Context, id string) (*AvailabilityOverride, error)
 	ListByTherapistInRange(ctx context.Context, therapistID string, from time.Time, to time.Time) ([]AvailabilityOverride, error)
 	Upsert(ctx context.Context, override AvailabilityOverride) (*AvailabilityOverride, error)
+}
+
+// TherapistTimezoneReader retrieves a therapist's canonical IANA timezone.
+type TherapistTimezoneReader interface {
+	GetTherapistTimezone(ctx context.Context, therapistID string) (string, error)
+}
+
+// BusySlotReader retrieves overlapping active bookings blocking slot generation.
+type BusySlotReader interface {
+	ListBusySlots(ctx context.Context, therapistID string, from time.Time, to time.Time) ([]BusySlot, error)
+}
+
+// Clock provides current timestamps for min-notice enforcement.
+type Clock interface {
+	Now() time.Time
 }

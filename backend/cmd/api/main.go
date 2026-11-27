@@ -19,7 +19,22 @@ import (
 func main() {
 	cfg := loadConfig()
 	logger := httptransport.NewRedactingLogger(os.Stdout, cfg.LogLevel)
-	app := bootstrap.NewApp(cfg, logger)
+
+	var app *bootstrap.App
+	var closeFn func()
+	if cfg.DatabaseURL != "" {
+		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		var err error
+		app, closeFn, err = bootstrap.NewAppFromEnv(initCtx, cfg, logger)
+		initCancel()
+		if err != nil {
+			logger.Error("failed to initialize application from environment", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		defer closeFn()
+	} else {
+		app = bootstrap.NewApp(cfg, logger)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -72,14 +87,8 @@ func main() {
 }
 
 func loadConfig() bootstrap.Config {
-	port := strings.TrimSpace(os.Getenv("PORT"))
-	if port == "" {
-		port = "8080"
-	}
-	platformDomain := strings.TrimSpace(os.Getenv("PLATFORM_DOMAIN"))
-	if platformDomain == "" {
-		platformDomain = "ravannama.ir"
-	}
+	port := envOrDefault("PORT", "8080")
+	platformDomain := envOrDefault("PLATFORM_DOMAIN", "ravannama.ir")
 
 	level := slog.LevelInfo
 	switch strings.ToUpper(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
@@ -92,8 +101,42 @@ func loadConfig() bootstrap.Config {
 	}
 
 	return bootstrap.Config{
-		Port:           port,
-		PlatformDomain: platformDomain,
-		LogLevel:       level,
+		Port:             port,
+		PlatformDomain:   platformDomain,
+		LogLevel:         level,
+		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		S3Endpoint:       envOrDefault("S3_ENDPOINT", "http://minio:9000"),
+		S3PublicEndpoint: strings.TrimSpace(os.Getenv("S3_PUBLIC_ENDPOINT")),
+		S3Region:         envOrDefault("S3_REGION", "ir-thr-at1"),
+		S3AccessKey:      strings.TrimSpace(os.Getenv("S3_ACCESS_KEY")),
+		S3SecretKey:      strings.TrimSpace(os.Getenv("S3_SECRET_KEY")),
+		S3PublicBucket:   envOrDefault("S3_PUBLIC_BUCKET", "ravannama-public"),
+		S3PrivateBucket:  envOrDefault("S3_PRIVATE_BUCKET", "ravannama-private"),
+		OTPPepper:         strings.TrimSpace(os.Getenv("OTP_PEPPER")),
+		CookieSecure:      parseBoolEnv("COOKIE_SECURE", false),
+		TrustProxyHeaders: parseBoolEnv("TRUST_PROXY_HEADERS", false),
+		AutoMigrate:       parseBoolEnv("AUTO_MIGRATE", false),
+		SeedPilotData:     parseBoolEnv("SEED_PILOT_DATA", false),
+		DevOTPSinkFile:    strings.TrimSpace(os.Getenv("DEV_OTP_SINK_FILE")),
+	}
+}
+
+func envOrDefault(key, fallback string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func parseBoolEnv(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		return fallback
 	}
 }

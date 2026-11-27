@@ -44,6 +44,13 @@ const RESERVED_SLUGS = new Set([
 ]);
 
 const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
+const CUSTOM_DOMAIN_CACHE_TTL_MS = 60_000;
+const CUSTOM_DOMAIN_TIMEOUT_MS = 2_000;
+
+const customDomainCache = new Map<
+  string,
+  { slug: string | null; expiresAt: number }
+>();
 
 function isBypassPath(pathname: string): boolean {
   return BYPASS_EXACT_OR_PREFIX.some(
@@ -52,11 +59,62 @@ function isBypassPath(pathname: string): boolean {
 }
 
 /**
- * Custom-domain host resolution hook.
- * Returns the mapped therapist slug for a verified custom domain in Milestone 3.
+ * Resolves a verified custom hostname to its therapist slug via the Go API,
+ * using a 60s in-memory cache and a 2s abort timeout (fail-safe to null).
  */
-async function resolveCustomDomainSlug(_hostname: string): Promise<string | null> {
-  return null;
+async function resolveCustomDomainSlug(hostname: string): Promise<string | null> {
+  const normalized = hostname.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const now = Date.now();
+  const cached = customDomainCache.get(normalized);
+  if (cached && cached.expiresAt > now) {
+    return cached.slug;
+  }
+
+  const base = (
+    process.env.INTERNAL_API_URL ?? "http://127.0.0.1:8080"
+  ).replace(/\/+$/, "");
+  const url = `${base}/api/v1/tenants/resolve?host=${encodeURIComponent(normalized)}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CUSTOM_DOMAIN_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      customDomainCache.set(normalized, {
+        slug: null,
+        expiresAt: now + CUSTOM_DOMAIN_CACHE_TTL_MS,
+      });
+      return null;
+    }
+
+    const payload = (await response.json().catch(() => null)) as {
+      slug?: unknown;
+    } | null;
+    const slug =
+      typeof payload?.slug === "string" &&
+      SLUG_REGEX.test(payload.slug) &&
+      !RESERVED_SLUGS.has(payload.slug)
+        ? payload.slug
+        : null;
+
+    customDomainCache.set(normalized, {
+      slug,
+      expiresAt: now + CUSTOM_DOMAIN_CACHE_TTL_MS,
+    });
+    return slug;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function middleware(request: NextRequest) {
@@ -101,7 +159,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Custom domain host flow (to be wired to backend resolution in Milestone 3).
+  // Custom domain host flow.
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-tenant-mode", "custom");
 

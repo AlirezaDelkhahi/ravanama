@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -23,32 +23,48 @@ import { PhoneInput } from "@/components/ui/PhoneInput";
 import { SheetModal } from "@/components/ui/SheetModal";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
-  readVerifiedClientSession,
-  writeVerifiedClientSession,
-} from "@/lib/client-session";
+  ApiError,
+  confirmReceiptUpload,
+  createBookingHold,
+  fetchTherapistSlots,
+  getAuthMe,
+  getClientBooking,
+  issueOtp,
+  presignReceiptUpload,
+  submitBookingReceipt,
+  uploadFileToPresignedUrl,
+  verifyOtp,
+  type ApiPaymentDestinationDTO,
+  type ApiSlotDTO,
+  type ApiUserDTO,
+} from "@/lib/api";
 import { downloadIcsFile } from "@/lib/ics";
 import {
+  getTrackOfferings,
+  resolveTrackOffering,
+} from "@/lib/booking-selection";
+import {
+  dateToTehranJalali,
   formatCurrency,
+  formatJalaliKey,
   formatJalaliLong,
   toPersianDigits,
   toWesternDigits,
 } from "@/lib/jalali";
-import {
-  generateMockSlotsForTherapist,
-  getPaymentAccountsForHeldBooking,
-  getRebookPresetById,
-  jalaliPartsFromKey,
-  type BookingTrack,
-  type TherapistProfile,
-  type TimeSlotOption,
-} from "@/lib/mock-data";
 import type { TenantMode } from "@/lib/tenant-href";
 import {
   detectBrowserTimezone,
   formatDualSlot,
   formatGregorianDateKeyInZone,
+  formatTime24InZone,
   getTimezoneOffsetLabel,
 } from "@/lib/timezone";
+import {
+  jalaliPartsFromKey,
+  type BookingTrack,
+  type TherapistProfile,
+  type TimeSlotOption,
+} from "@/lib/types";
 
 interface BookingWizardProps {
   therapist: TherapistProfile;
@@ -57,7 +73,7 @@ interface BookingWizardProps {
   initialRebookId?: string;
 }
 
-type WizardStep = 1 | 2 | 3 | 4 | 5; // 5 = Post-submit Pending Confirmation
+type WizardStep = 1 | 2 | 3 | 4 | 5;
 type TrackBMethod = "paypal" | "iban" | "usdt";
 
 interface HeldBookingState {
@@ -67,6 +83,7 @@ interface HeldBookingState {
   slot: TimeSlotOption;
   track: BookingTrack;
   serviceId: string;
+  paymentAccounts: ApiPaymentDestinationDTO[];
 }
 
 interface FieldErrors {
@@ -96,111 +113,278 @@ function formatCountdownMmSs(secondsRemaining: number, usePersianDigits: boolean
   return usePersianDigits ? toPersianDigits(raw) : raw;
 }
 
+function mapApiSlotToOption(slot: ApiSlotDTO): TimeSlotOption {
+  const d = new Date(slot.start_at);
+  const jalali = dateToTehranJalali(d);
+  const tehranTime24 = formatTime24InZone(d, "Asia/Tehran");
+  const [hh, mm] = tehranTime24.split(":").map(Number);
+  return {
+    id: slot.start_at,
+    isoUtc: slot.start_at,
+    tehranJalaliKey: formatJalaliKey(jalali.jy, jalali.jm, jalali.jd),
+    tehranTimeFa: toPersianDigits(tehranTime24),
+    tehranHour: hh || 0,
+    tehranMinute: mm || 0,
+  };
+}
+
+function splitPhoneE164(phone: string): { dial: string; national: string } | null {
+  const knownDials = ["+971", "+98", "+49", "+44", "+61", "+1"];
+  for (const dial of knownDials) {
+    if (phone.startsWith(dial)) {
+      return { dial, national: phone.slice(dial.length) };
+    }
+  }
+  return null;
+}
+
+function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `hold-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function BookingWizard({
   therapist,
+  slug,
   initialRebookId,
 }: BookingWizardProps) {
-  const rebookPreset = useMemo(() => {
-    if (!initialRebookId) return undefined;
-    const preset = getRebookPresetById(initialRebookId);
-    if (preset && preset.therapistSlug === therapist.slug) {
-      return preset;
-    }
-    return undefined;
-  }, [initialRebookId, therapist.slug]);
+  const initialTrack: BookingTrack = useMemo(() => {
+    const hasIran = therapist.offerings.some((o) => o.track === "iran");
+    return hasIran ? "iran" : "abroad";
+  }, [therapist.offerings]);
 
-  const allSlots = useMemo(
-    () => generateMockSlotsForTherapist(therapist.slug),
-    [therapist.slug],
+  const initialOffering = useMemo(
+    () => resolveTrackOffering(therapist.offerings, initialTrack, ""),
+    [initialTrack, therapist.offerings],
   );
 
-  const initialTrack: BookingTrack = rebookPreset?.track ?? "iran";
-  const initialOffering = useMemo(() => {
-    const byPreset = rebookPreset
-      ? therapist.offerings.find((o) => o.id === rebookPreset.serviceId)
-      : undefined;
-    return (
-      byPreset ??
-      therapist.offerings.find((o) => o.track === initialTrack) ??
-      therapist.offerings[0]
-    );
-  }, [initialTrack, rebookPreset, therapist.offerings]);
+  const todayJalali = useMemo(() => dateToTehranJalali(new Date()), []);
+  const todayJalaliKey = useMemo(
+    () => formatJalaliKey(todayJalali.jy, todayJalali.jm, todayJalali.jd),
+    [todayJalali],
+  );
 
-  const [step, setStep] = useState<WizardStep>(rebookPreset ? 2 : 1);
+  const [step, setStep] = useState<WizardStep>(1);
   const [track, setTrack] = useState<BookingTrack>(initialTrack);
   const [selectedOfferingId, setSelectedOfferingId] = useState<string>(
     initialOffering?.id ?? "",
   );
   const [clientTimezone, setClientTimezone] = useState<string>("Europe/Berlin");
 
+  const [allSlots, setAllSlots] = useState<TimeSlotOption[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState<boolean>(true);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
+  const [slotsRefreshSeq, setSlotsRefreshSeq] = useState<number>(0);
+
   const [selectedJalaliDateKey, setSelectedJalaliDateKey] = useState<string | null>(
-    () => allSlots[0]?.tehranJalaliKey ?? "1405-09-07",
+    todayJalaliKey,
   );
   const [selectedGregorianDateKey, setSelectedGregorianDateKey] = useState<string | null>(
-    () =>
-      allSlots[0]
-        ? formatGregorianDateKeyInZone(new Date(allSlots[0].isoUtc), "Europe/Berlin")
-        : "2026-12-01",
+    () => formatGregorianDateKeyInZone(new Date(), "Europe/Berlin"),
   );
   const [selectedSlot, setSelectedSlot] = useState<TimeSlotOption | null>(null);
 
+  // Rebook context banner
+  const [rebookNotice, setRebookNotice] = useState<string | null>(null);
+
   // Step 3 form state
-  const [clientName, setClientName] = useState(rebookPreset?.clientName ?? "");
+  const [clientName, setClientName] = useState("");
   const [phoneDialCode, setPhoneDialCode] = useState(
-    rebookPreset?.phoneDialCode ?? (initialTrack === "iran" ? "+98" : "+49"),
+    initialTrack === "iran" ? "+98" : "+49",
   );
-  const [phoneNational, setPhoneNational] = useState(
-    rebookPreset?.phoneNational ?? "",
-  );
-  const [email, setEmail] = useState(rebookPreset?.email ?? "");
-  const [note, setNote] = useState(rebookPreset?.note ?? "");
-  const [policyAccepted, setPolicyAccepted] = useState(Boolean(rebookPreset));
+  const [phoneNational, setPhoneNational] = useState("");
+  const [email, setEmail] = useState("");
+  const [note, setNote] = useState("");
+  const [policyAccepted, setPolicyAccepted] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
 
   // Mobile summary collapsible toggle
   const [mobileSummaryOpen, setMobileSummaryOpen] = useState(false);
 
-  // OTP Drawer state
+  // Auth & OTP state
+  const [authUser, setAuthUser] = useState<ApiUserDTO | null>(null);
   const [otpModalOpen, setOtpModalOpen] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [otpError, setOtpError] = useState<string | null>(null);
+  const [otpBusy, setOtpBusy] = useState(false);
   const [otpSecondsLeft, setOtpSecondsLeft] = useState(120);
-  const [isOtpVerified, setIsOtpVerified] = useState(false);
+  const [holdError, setHoldError] = useState<string | null>(null);
+  const [holdBusy, setHoldBusy] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState<string>(generateIdempotencyKey);
 
   // Step 4 Hold + Payment + Upload state
   const [heldBooking, setHeldBooking] = useState<HeldBookingState | null>(null);
   const [holdSecondsLeft, setHoldSecondsLeft] = useState(15 * 60);
   const [abroadMethod, setAbroadMethod] = useState<TrackBMethod>("paypal");
 
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptFileName, setReceiptFileName] = useState<string | null>(null);
   const [receiptFileSize, setReceiptFileSize] = useState<number>(0);
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [submittingReceipt, setSubmittingReceipt] = useState<boolean>(false);
   const [trackingCode, setTrackingCode] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const uploadTimersRef = useRef<number[]>([]);
   const nameId = useId();
   const phoneId = useId();
   const emailId = useId();
   const noteId = useId();
   const trackingId = useId();
 
+  // Detect browser timezone for Track B
   useEffect(() => {
     const detected = detectBrowserTimezone("Europe/Berlin");
     if (detected && detected !== "Asia/Tehran") {
       setClientTimezone(detected);
-      if (allSlots[0]) {
-        setSelectedGregorianDateKey(
-          formatGregorianDateKeyInZone(new Date(allSlots[0].isoUtc), detected),
-        );
-      }
+      setSelectedGregorianDateKey(
+        formatGregorianDateKeyInZone(new Date(), detected),
+      );
     }
-  }, [allSlots]);
+  }, []);
 
-  // Cleanup preview object URL & simulated upload timers on unmount / replace
+  // Hydrate authenticated session & optional ?rebook=<id>
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const me = await getAuthMe();
+        if (!active) return;
+        setAuthUser(me.user);
+        if (me.user.full_name) {
+          setClientName((prev) => prev || me.user.full_name);
+        }
+        if (me.user.email) {
+          setEmail((prev) => prev || me.user.email || "");
+        }
+        if (me.user.phone_e164) {
+          const split = splitPhoneE164(me.user.phone_e164);
+          if (split) {
+            setPhoneDialCode(split.dial);
+            setPhoneNational((prev) => prev || split.national);
+          }
+        }
+
+        if (initialRebookId) {
+          try {
+            const { booking } = await getClientBooking(initialRebookId);
+            if (!active) return;
+            if (
+              booking.therapist_slug === slug ||
+              booking.therapist_id === therapist.id
+            ) {
+              setTrack(booking.track);
+              if (booking.service_offering_id) {
+                setSelectedOfferingId(booking.service_offering_id);
+              }
+              if (booking.client_note) {
+                setNote(booking.client_note);
+              }
+              setPolicyAccepted(true);
+              if (
+                getTrackOfferings(therapist.offerings, booking.track).length > 0
+              ) {
+                setStep(2);
+              }
+              setRebookNotice(
+                booking.rejection_reason
+                  ? `اطلاعات پرونده قبلی شما جای‌گذاری شد (دلیل قبلی: ${booking.rejection_reason}). لطفاً زمان جدیدی انتخاب کرده و رسید اصلاح‌شده را بارگذاری کنید.`
+                  : "اطلاعات پرونده قبلی شما جای‌گذاری شد. لطفاً یک زمان آزاد انتخاب کرده و رسید جدید را بارگذاری کنید.",
+              );
+            }
+          } catch {
+            // Ignore missing/unauthorized rebook id
+          }
+        }
+      } catch {
+        // Unauthenticated visitor — expected before Step 3 OTP
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [initialRebookId, slug, therapist.id, therapist.offerings]);
+
+  // Regenerate Idempotency-Key whenever slot, offering, or track changes
+  useEffect(() => {
+    setIdempotencyKey(generateIdempotencyKey());
+  }, [selectedSlot?.isoUtc, selectedOfferingId, track]);
+
+  const trackOfferings = useMemo(
+    () => getTrackOfferings(therapist.offerings, track),
+    [therapist.offerings, track],
+  );
+
+  const selectedOffering = useMemo(
+    () => resolveTrackOffering(therapist.offerings, track, selectedOfferingId),
+    [selectedOfferingId, therapist.offerings, track],
+  );
+
+  // Fetch live slots whenever offering, track, or clientTimezone changes
+  useEffect(() => {
+    if (!selectedOffering?.id) {
+      setAllSlots([]);
+      setSlotsLoading(false);
+      return;
+    }
+
+    let active = true;
+    const effectiveTz = track === "iran" ? "Asia/Tehran" : clientTimezone;
+    const now = new Date();
+    const fromIso = now.toISOString();
+    const toIso = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    setSlotsLoading(true);
+    setSlotsError(null);
+
+    fetchTherapistSlots(slug, selectedOffering.id, fromIso, toIso, effectiveTz)
+      .then((res) => {
+        if (!active) return;
+        const mapped = (res.slots ?? []).map(mapApiSlotToOption);
+        setAllSlots(mapped);
+
+        if (mapped.length > 0) {
+          const firstSlot = mapped[0];
+          setSelectedJalaliDateKey((prev) =>
+            prev && mapped.some((s) => s.tehranJalaliKey === prev)
+              ? prev
+              : firstSlot.tehranJalaliKey,
+          );
+          const firstGregKey = formatGregorianDateKeyInZone(
+            new Date(firstSlot.isoUtc),
+            effectiveTz,
+          );
+          setSelectedGregorianDateKey((prev) =>
+            prev &&
+            mapped.some(
+              (s) =>
+                formatGregorianDateKeyInZone(new Date(s.isoUtc), effectiveTz) ===
+                prev,
+            )
+              ? prev
+              : firstGregKey,
+          );
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setSlotsError("دریافت زمان‌های آزاد با خطا مواجه شد. لطفاً دوباره تلاش کنید.");
+      })
+      .finally(() => {
+        if (active) setSlotsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [clientTimezone, selectedOffering?.id, slotsRefreshSeq, slug, track]);
+
+  // Cleanup preview object URL
   useEffect(() => {
     return () => {
       if (receiptPreviewUrl) {
@@ -208,15 +392,6 @@ export function BookingWizard({
       }
     };
   }, [receiptPreviewUrl]);
-
-  useEffect(() => {
-    return () => {
-      for (const timerId of uploadTimersRef.current) {
-        window.clearTimeout(timerId);
-      }
-      uploadTimersRef.current = [];
-    };
-  }, []);
 
   // OTP 120s timer
   useEffect(() => {
@@ -242,20 +417,6 @@ export function BookingWizard({
     return () => window.clearInterval(timer);
   }, [step, heldBooking]);
 
-  const trackOfferings = useMemo(
-    () => therapist.offerings.filter((o) => o.track === track),
-    [therapist.offerings, track],
-  );
-
-  const selectedOffering = useMemo(
-    () =>
-      trackOfferings.find((o) => o.id === selectedOfferingId) ??
-      trackOfferings[0] ??
-      therapist.offerings[0],
-    [selectedOfferingId, therapist.offerings, trackOfferings],
-  );
-
-  // Jalali slot grouping
   const jalaliAvailableDates = useMemo(
     () => new Set(allSlots.map((s) => s.tehranJalaliKey)),
     [allSlots],
@@ -268,18 +429,23 @@ export function BookingWizard({
 
   const handleTrackChange = (nextTrack: BookingTrack) => {
     setTrack(nextTrack);
-    const firstOfferingForTrack = therapist.offerings.find(
-      (o) => o.track === nextTrack,
-    );
-    if (firstOfferingForTrack) {
-      setSelectedOfferingId(firstOfferingForTrack.id);
-    }
+    const firstOfferingForTrack = getTrackOfferings(
+      therapist.offerings,
+      nextTrack,
+    )[0];
+    setSelectedOfferingId(firstOfferingForTrack?.id ?? "");
     setSelectedSlot(null);
+    setHoldError(null);
     if (nextTrack === "iran") {
       setPhoneDialCode("+98");
     } else if (phoneDialCode === "+98") {
       setPhoneDialCode("+49");
     }
+  };
+
+  const handleContinueToStep2 = () => {
+    if (!selectedOffering || trackOfferings.length === 0) return;
+    setStep(2);
   };
 
   const handleJumpNearestJalali = () => {
@@ -305,7 +471,13 @@ export function BookingWizard({
       errors.clientName = "لطفاً نام و نام خانوادگی خود را وارد کنید.";
     }
     const cleanPhoneDigits = toWesternDigits(phoneNational).replace(/\D/g, "");
-    if (cleanPhoneDigits.length < 8) {
+    if (track === "iran" && cleanPhoneDigits.length < 8) {
+      errors.phone = "شماره تماس معتبر وارد کنید.";
+    } else if (
+      track === "abroad" &&
+      cleanPhoneDigits.length > 0 &&
+      cleanPhoneDigits.length < 7
+    ) {
       errors.phone = "شماره تماس معتبر وارد کنید.";
     }
     const cleanEmail = email.trim();
@@ -325,71 +497,162 @@ export function BookingWizard({
     return Object.keys(errors).length === 0;
   };
 
-  const createHoldAndAdvanceToStep4 = () => {
+  const createHoldAndAdvanceToStep4 = useCallback(async () => {
     if (!selectedSlot || !selectedOffering) return;
-    const randomSuffix = Math.random().toString(36).slice(2, 8).toUpperCase();
-    setHeldBooking({
-      id: `hold-${Date.now()}`,
-      referenceCode: `RN-${randomSuffix}`,
-      holdExpiresAtMs: Date.now() + 15 * 60 * 1000,
-      slot: selectedSlot,
-      track,
-      serviceId: selectedOffering.id,
-    });
-    setHoldSecondsLeft(15 * 60);
-    setStep(4);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setHoldBusy(true);
+    setHoldError(null);
+    try {
+      const res = await createBookingHold(
+        {
+          therapist_id: therapist.id,
+          service_offering_id: selectedOffering.id,
+          track,
+          client_timezone: track === "iran" ? "Asia/Tehran" : clientTimezone,
+          slot_start: selectedSlot.isoUtc,
+          client_note: note.trim(),
+        },
+        idempotencyKey,
+      );
+
+      const expiresMs = res.booking.hold_expires_at
+        ? new Date(res.booking.hold_expires_at).getTime()
+        : Date.now() + 15 * 60 * 1000;
+
+      setHeldBooking({
+        id: res.booking.id,
+        referenceCode: res.booking.reference_code,
+        holdExpiresAtMs: expiresMs,
+        slot: selectedSlot,
+        track,
+        serviceId: selectedOffering.id,
+        paymentAccounts: res.payment_accounts ?? [],
+      });
+      setHoldSecondsLeft(Math.max(0, Math.ceil((expiresMs - Date.now()) / 1000)));
+      setStep(4);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 409) {
+          setHoldError(
+            "این زمان هم‌اکنون توسط مراجع دیگری رزرو شده است. لطفاً زمان دیگری انتخاب کنید.",
+          );
+          setSelectedSlot(null);
+          setSlotsRefreshSeq((n) => n + 1);
+          setStep(2);
+          return;
+        }
+        if (err.status === 422) {
+          setHoldError(
+            "شما هم‌اکنون حداکثر تعداد رزرو موقت فعال را دارید. لطفاً ابتدا نوبت‌های قبلی خود را در «پیگیری نوبت» تکمیل یا لغو کنید.",
+          );
+          return;
+        }
+        if (err.status === 401) {
+          setAuthUser(null);
+          setOtpModalOpen(true);
+          return;
+        }
+      }
+      setHoldError("ایجاد رزرو موقت با خطا مواجه شد. لطفاً دوباره تلاش کنید.");
+    } finally {
+      setHoldBusy(false);
+    }
+  }, [
+    clientTimezone,
+    idempotencyKey,
+    note,
+    selectedOffering,
+    selectedSlot,
+    therapist.id,
+    track,
+  ]);
+
+  const expectedVerifyChannel: "sms" | "email" = track === "abroad" ? "email" : "sms";
+
+  const isCurrentChannelVerified = useMemo(() => {
+    if (!authUser) return false;
+    if (track === "abroad") {
+      return (
+        typeof authUser.email === "string" &&
+        authUser.email.toLowerCase() === primaryContactIdentifier
+      );
+    }
+    return (
+      typeof authUser.phone_e164 === "string" &&
+      authUser.phone_e164 === primaryContactIdentifier
+    );
+  }, [authUser, primaryContactIdentifier, track]);
+
+  const requestBookingOtp = async () => {
+    setOtpBusy(true);
+    setOtpError(null);
+    try {
+      await issueOtp({
+        destination: primaryContactIdentifier,
+        channel: expectedVerifyChannel,
+        purpose: "booking_verify",
+      });
+      setOtpCode("");
+      setOtpSecondsLeft(120);
+      setOtpModalOpen(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        setHoldError("تعداد درخواست کد تایید بیش از حد مجاز است. لطفاً کمی بعد تلاش کنید.");
+      } else {
+        setHoldError("ارسال کد تایید با خطا مواجه شد. لطفاً ورودی خود را بررسی کنید.");
+      }
+    } finally {
+      setOtpBusy(false);
+    }
   };
 
-  const expectedVerifyChannel = track === "abroad" ? "email" : "phone";
-
-  const handleStep3Proceed = () => {
+  const handleStep3Proceed = async () => {
+    setHoldError(null);
     if (!validateStep3()) return;
 
-    // Check if an existing OTP-verified session matches the same channel & identifier
-    const existing = readVerifiedClientSession();
-    const matchedExisting = Boolean(
-      existing &&
-        existing.channel === expectedVerifyChannel &&
-        existing.identifier === primaryContactIdentifier,
-    );
-
-    if (matchedExisting) {
-      setIsOtpVerified(true);
-      createHoldAndAdvanceToStep4();
+    if (isCurrentChannelVerified) {
+      await createHoldAndAdvanceToStep4();
       return;
     }
 
-    setOtpCode("");
-    setOtpError(null);
-    setOtpSecondsLeft(120);
-    setOtpModalOpen(true);
+    await requestBookingOtp();
   };
 
-  const handleVerifyOtp = () => {
+  const handleVerifyOtp = async () => {
     const normalized = toWesternDigits(otpCode).replace(/\D/g, "");
     if (normalized.length !== 6) {
       setOtpError("لطفاً کد ۶ رقمی ارسال‌شده را به صورت کامل وارد کنید.");
       return;
     }
-    if (normalized !== "123456") {
-      setOtpError("کد واردشده نادرست است. در محیط پیش‌نمایش از کد 123456 استفاده کنید.");
-      return;
-    }
 
-    writeVerifiedClientSession(expectedVerifyChannel, primaryContactIdentifier);
-
+    setOtpBusy(true);
     setOtpError(null);
-    setOtpModalOpen(false);
-    setIsOtpVerified(true);
-    createHoldAndAdvanceToStep4();
-  };
-
-  const clearUploadTimers = () => {
-    for (const timerId of uploadTimersRef.current) {
-      window.clearTimeout(timerId);
+    try {
+      const res = await verifyOtp({
+        destination: primaryContactIdentifier,
+        channel: expectedVerifyChannel,
+        purpose: "booking_verify",
+        code: normalized,
+        full_name: clientName.trim(),
+      });
+      setAuthUser(res.user);
+      setOtpModalOpen(false);
+      await createHoldAndAdvanceToStep4();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 429) {
+          setOtpError("تعداد تلاش‌های اشتباه بیش از حد مجاز است. لطفاً کمی بعد کد جدید بگیرید.");
+        } else if (err.status === 401) {
+          setOtpError("کد تایید نادرست یا منقضی شده است.");
+        } else {
+          setOtpError("خطا در تایید کد. لطفاً دوباره تلاش کنید.");
+        }
+      } else {
+        setOtpError("خطا در برقراری ارتباط با سرور.");
+      }
+    } finally {
+      setOtpBusy(false);
     }
-    uploadTimersRef.current = [];
   };
 
   const handleReceiptFileSelection = (file: File | undefined) => {
@@ -404,28 +667,24 @@ export function BookingWizard({
       return;
     }
 
-    clearUploadTimers();
     if (receiptPreviewUrl) {
       URL.revokeObjectURL(receiptPreviewUrl);
     }
 
     const preview = URL.createObjectURL(file);
     setUploadError(null);
+    setReceiptFile(file);
     setReceiptFileName(file.name);
     setReceiptFileSize(file.size);
     setReceiptPreviewUrl(preview);
-    setUploadProgress(25);
-
-    const t1 = window.setTimeout(() => setUploadProgress(65), 140);
-    const t2 = window.setTimeout(() => setUploadProgress(100), 320);
-    uploadTimersRef.current = [t1, t2];
+    setUploadProgress(0);
   };
 
   const handleClearReceipt = () => {
-    clearUploadTimers();
     if (receiptPreviewUrl) {
       URL.revokeObjectURL(receiptPreviewUrl);
     }
+    setReceiptFile(null);
     setReceiptPreviewUrl(null);
     setReceiptFileName(null);
     setReceiptFileSize(0);
@@ -436,7 +695,7 @@ export function BookingWizard({
     }
   };
 
-  const handleSubmitReceipt = () => {
+  const handleSubmitReceipt = async () => {
     if (
       !heldBooking ||
       holdSecondsLeft <= 0 ||
@@ -445,22 +704,89 @@ export function BookingWizard({
       setHoldSecondsLeft(0);
       return;
     }
-    if (!receiptPreviewUrl || uploadProgress < 100) {
+    if (!receiptFile || !receiptPreviewUrl) {
       setUploadError("لطفاً تصویر رسید پرداخت (JPG، PNG یا WEBP) را بارگذاری کنید.");
       return;
     }
-    setStep(5);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    setSubmittingReceipt(true);
+    setUploadError(null);
+    setUploadProgress(20);
+
+    try {
+      const presigned = await presignReceiptUpload(
+        heldBooking.id,
+        receiptFile.type,
+        receiptFile.size,
+      );
+      setUploadProgress(45);
+
+      await uploadFileToPresignedUrl(
+        presigned.upload_url,
+        receiptFile,
+        receiptFile.type,
+      );
+      setUploadProgress(75);
+
+      await confirmReceiptUpload(presigned.media_object_id);
+      setUploadProgress(90);
+
+      await submitBookingReceipt(
+        heldBooking.id,
+        presigned.media_object_id,
+        trackingCode.trim(),
+      );
+      setUploadProgress(100);
+
+      setStep(5);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (err) {
+      setUploadProgress(0);
+      if (err instanceof ApiError) {
+        if (err.status === 410) {
+          setHoldSecondsLeft(0);
+          return;
+        }
+        if (err.status === 422) {
+          setUploadError(
+            "فایل ارسالی به‌عنوان تصویر معتبر تایید نشد. لطفاً تصویر سالم JPG، PNG یا WEBP انتخاب کنید.",
+          );
+          return;
+        }
+        if (err.status === 409) {
+          setUploadError(
+            "وضعیت این رزرو تغییر کرده است. لطفاً وضعیت نوبت خود را در پورتال پیگیری بررسی کنید.",
+          );
+          return;
+        }
+      }
+      setUploadError("بارگذاری و ثبت رسید با خطا مواجه شد. لطفاً دوباره تلاش کنید.");
+    } finally {
+      setSubmittingReceipt(false);
+    }
   };
 
-  // Payment accounts are retrieved ONLY in Step 4 when verified & held!
-  const paymentAccounts =
-    step === 4 && isOtpVerified && heldBooking
-      ? getPaymentAccountsForHeldBooking(therapist.slug)
-      : null;
+  // Payment accounts come STRICTLY from the active held booking returned by POST /api/v1/bookings/hold
+  const paymentAccounts = useMemo(
+    () => (step === 4 && heldBooking ? heldBooking.paymentAccounts : []),
+    [heldBooking, step],
+  );
 
-  const availableAbroadMethods = (["paypal", "iban", "usdt"] as const).filter(
-    (m) => Boolean(paymentAccounts?.abroad[m]),
+  const iranAccounts = useMemo(
+    () => paymentAccounts.filter((a) => a.track === "iran"),
+    [paymentAccounts],
+  );
+  const abroadAccounts = useMemo(
+    () => paymentAccounts.filter((a) => a.track === "abroad"),
+    [paymentAccounts],
+  );
+
+  const availableAbroadMethods = useMemo(
+    () =>
+      (["paypal", "iban", "usdt"] as const).filter((m) =>
+        abroadAccounts.some((a) => a.method === m),
+      ),
+    [abroadAccounts],
   );
   const activeAbroadMethod: TrackBMethod = availableAbroadMethods.includes(
     abroadMethod,
@@ -483,7 +809,8 @@ export function BookingWizard({
     const dual = formatDualSlot(selectedSlot.isoUtc, clientTimezone);
     return {
       primary: `${dual.dateLabelEn} · ${dual.localTime24h}`,
-      secondary: `معادل ${dual.tehranTimeFa} تهران (${clientTimezone})`,
+      secondary: `معادل ${dual.tehranTimeFa} تهران`,
+      timezoneLabel: clientTimezone,
     };
   }, [clientTimezone, selectedSlot, track]);
 
@@ -491,17 +818,25 @@ export function BookingWizard({
     ? formatCurrency(selectedOffering.priceAmount, selectedOffering.currency)
     : "";
 
+  const selectedJalaliParts = useMemo(
+    () =>
+      selectedJalaliDateKey ? jalaliPartsFromKey(selectedJalaliDateKey) : null,
+    [selectedJalaliDateKey],
+  );
+
   const isHoldExpired = step === 4 && holdSecondsLeft <= 0;
 
   const renderPrimaryMobileCta = () => {
     if (step === 1) {
+      const canContinue = Boolean(selectedOffering && trackOfferings.length > 0);
       return (
         <button
           type="button"
-          onClick={() => setStep(2)}
-          className="w-full min-h-[48px] px-5 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover transition-colors"
+          disabled={!canContinue}
+          onClick={handleContinueToStep2}
+          className="w-full min-h-[48px] px-5 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted disabled:cursor-not-allowed transition-colors"
         >
-          ادامه و انتخاب زمان
+          {canContinue ? "ادامه و انتخاب زمان" : "خدمتی برای این مسیر فعال نیست"}
         </button>
       );
     }
@@ -521,10 +856,13 @@ export function BookingWizard({
       return (
         <button
           type="button"
+          disabled={otpBusy || holdBusy}
           onClick={handleStep3Proceed}
-          className="w-full min-h-[48px] px-5 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover transition-colors"
+          className="w-full min-h-[48px] px-5 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted transition-colors"
         >
-          رزرو موقت ۱۵ دقیقه‌ای و ادامه به پرداخت
+          {holdBusy || otpBusy
+            ? "در حال بررسی..."
+            : "رزرو موقت ۱۵ دقیقه‌ای و ادامه به پرداخت"}
         </button>
       );
     }
@@ -532,11 +870,13 @@ export function BookingWizard({
       return (
         <button
           type="button"
-          disabled={isHoldExpired || !receiptPreviewUrl || uploadProgress < 100}
+          disabled={isHoldExpired || !receiptFile || submittingReceipt}
           onClick={handleSubmitReceipt}
           className="w-full min-h-[48px] px-5 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted disabled:cursor-not-allowed transition-colors"
         >
-          ثبت رسید و ارسال برای تایید درمانگر
+          {submittingReceipt
+            ? "در حال ارسال و ثبت رسید..."
+            : "ثبت رسید و ارسال برای تایید درمانگر"}
         </button>
       );
     }
@@ -577,8 +917,11 @@ export function BookingWizard({
           {selectedSlotDisplay ? (
             <div className="flex items-center justify-between gap-2 text-sm">
               <span className="text-ink-muted">زمان انتخاب‌شده</span>
-              <span className="font-medium text-ink text-end tabular-nums">
-                <bdi dir="auto">{selectedSlotDisplay.primary}</bdi>
+              <span
+                dir={track === "abroad" ? "ltr" : undefined}
+                className="inline-block font-medium text-ink text-end tabular-nums"
+              >
+                {selectedSlotDisplay.primary}
               </span>
             </div>
           ) : null}
@@ -619,11 +962,9 @@ export function BookingWizard({
   return (
     <div className="space-y-6 pb-28 lg:pb-0">
       {/* Rebook context notice */}
-      {rebookPreset ? (
+      {rebookNotice ? (
         <div className="rounded-2xl border border-status-info-border bg-status-info-bg px-4 py-3.5 text-sm text-status-info-ink flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <p>
-            اطلاعات پرونده قبلی شما جای‌گذاری شد. لطفاً یک زمان آزاد انتخاب کرده و رسید اصلاح‌شده را بارگذاری کنید.
-          </p>
+          <p>{rebookNotice}</p>
           <button
             type="button"
             onClick={() => setStep(1)}
@@ -631,6 +972,15 @@ export function BookingWizard({
           >
             تغییر نوع جلسه
           </button>
+        </div>
+      ) : null}
+
+      {holdError ? (
+        <div
+          role="alert"
+          className="rounded-2xl border border-status-rejected-border bg-status-rejected-bg px-4 py-3.5 text-sm text-status-rejected-ink"
+        >
+          {holdError}
         </div>
       ) : null}
 
@@ -718,8 +1068,11 @@ export function BookingWizard({
             {selectedSlotDisplay ? (
               <div className="flex justify-between gap-2">
                 <span className="text-ink-muted">زمان</span>
-                <span className="font-medium text-ink text-end tabular-nums">
-                  <bdi dir="auto">{selectedSlotDisplay.primary}</bdi>
+                <span
+                  dir={track === "abroad" ? "ltr" : undefined}
+                  className="inline-block font-medium text-ink text-end tabular-nums"
+                >
+                  {selectedSlotDisplay.primary}
                 </span>
               </div>
             ) : null}
@@ -759,7 +1112,7 @@ export function BookingWizard({
                     }`}
                   >
                     <MapPin className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
-                    <div>
+                    <div className="min-w-0 flex-1 text-start">
                       <span className="block text-sm sm:text-base">داخل ایران</span>
                       <span className="block text-xs text-ink-muted mt-0.5">
                         پرداخت ریالی · ساعت تهران
@@ -778,7 +1131,7 @@ export function BookingWizard({
                     }`}
                   >
                     <Globe className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
-                    <div>
+                    <div className="min-w-0 flex-1 text-start">
                       <span className="block text-sm sm:text-base">خارج از ایران</span>
                       <span className="block text-xs text-ink-muted mt-0.5">
                         پرداخت ارزی · ساعت محلی شما
@@ -792,48 +1145,55 @@ export function BookingWizard({
                 <span className="block text-sm font-medium text-ink">
                   انتخاب نوع جلسه آنلاین
                 </span>
-                {trackOfferings.map((offering) => {
-                  const isSelected = selectedOffering?.id === offering.id;
-                  return (
-                    <button
-                      key={offering.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={isSelected}
-                      onClick={() => setSelectedOfferingId(offering.id)}
-                      className={`w-full text-start rounded-2xl border p-4 cursor-pointer transition-colors space-y-2 ${
-                        isSelected
-                          ? "border-accent bg-accent-tint"
-                          : "border-border bg-surface hover:border-border-strong hover:bg-subtle/40"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-base font-semibold text-ink">
-                          {offering.title}
+                {trackOfferings.length === 0 ? (
+                  <p className="rounded-xl border border-border bg-subtle/50 p-4 text-sm text-ink-secondary">
+                    برای این مسیر فعلاً خدمتی تعریف نشده است. لطفاً مسیر دیگر را بررسی کنید.
+                  </p>
+                ) : (
+                  trackOfferings.map((offering) => {
+                    const isSelected = selectedOffering?.id === offering.id;
+                    return (
+                      <button
+                        key={offering.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={isSelected}
+                        onClick={() => setSelectedOfferingId(offering.id)}
+                        className={`w-full text-start rounded-2xl border p-4 cursor-pointer transition-colors space-y-2 ${
+                          isSelected
+                            ? "border-accent bg-accent-tint"
+                            : "border-border bg-surface hover:border-border-strong hover:bg-subtle/40"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-base font-semibold text-ink">
+                            {offering.title}
+                          </span>
+                          <span
+                            dir={offering.currency === "IRT" ? "rtl" : "ltr"}
+                            className="text-base font-bold text-accent tabular-nums"
+                          >
+                            {formatCurrency(offering.priceAmount, offering.currency)}
+                          </span>
+                        </div>
+                        <p className="text-sm text-ink-secondary">
+                          {offering.description}
+                        </p>
+                        <span className="inline-flex items-center rounded-full bg-surface border border-border px-2.5 py-0.5 text-xs text-ink-muted tabular-nums">
+                          مدت جلسه: {toPersianDigits(offering.durationMinutes)} دقیقه
                         </span>
-                        <span
-                          dir={offering.currency === "IRT" ? "rtl" : "ltr"}
-                          className="text-base font-bold text-accent tabular-nums"
-                        >
-                          {formatCurrency(offering.priceAmount, offering.currency)}
-                        </span>
-                      </div>
-                      <p className="text-sm text-ink-secondary">
-                        {offering.description}
-                      </p>
-                      <span className="inline-flex items-center rounded-full bg-surface border border-border px-2.5 py-0.5 text-xs text-ink-muted tabular-nums">
-                        مدت جلسه: {toPersianDigits(offering.durationMinutes)} دقیقه
-                      </span>
-                    </button>
-                  );
-                })}
+                      </button>
+                    );
+                  })
+                )}
               </div>
 
               <div className="hidden lg:flex justify-end pt-2">
                 <button
                   type="button"
-                  onClick={() => setStep(2)}
-                  className="min-h-[48px] px-6 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover transition-colors"
+                  disabled={!selectedOffering || trackOfferings.length === 0}
+                  onClick={handleContinueToStep2}
+                  className="min-h-[48px] px-6 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted disabled:cursor-not-allowed transition-colors"
                 >
                   ادامه و انتخاب زمان
                 </button>
@@ -865,7 +1225,22 @@ export function BookingWizard({
                 </button>
               </div>
 
-              {track === "iran" ? (
+              {slotsLoading ? (
+                <div className="rounded-2xl border border-border bg-subtle/40 p-8 text-center text-sm text-ink-secondary">
+                  در حال دریافت زمان‌های آزاد درمانگر...
+                </div>
+              ) : slotsError ? (
+                <div className="rounded-2xl border border-status-rejected-border bg-status-rejected-bg p-5 text-center space-y-3">
+                  <p className="text-sm text-status-rejected-ink">{slotsError}</p>
+                  <button
+                    type="button"
+                    onClick={() => setSlotsRefreshSeq((n) => n + 1)}
+                    className="min-h-[44px] px-4 rounded-xl bg-accent text-white text-sm font-medium"
+                  >
+                    تلاش مجدد
+                  </button>
+                </div>
+              ) : track === "iran" ? (
                 <JalaliCalendar
                   availableDates={jalaliAvailableDates}
                   selectedDateKey={selectedJalaliDateKey}
@@ -877,6 +1252,9 @@ export function BookingWizard({
                   selectedSlotId={selectedSlot?.id ?? null}
                   onSelectSlot={setSelectedSlot}
                   onJumpToNearestAvailable={handleJumpNearestJalali}
+                  initialYear={selectedJalaliParts?.jy ?? todayJalali.jy}
+                  initialMonth={selectedJalaliParts?.jm ?? todayJalali.jm}
+                  todayKey={todayJalaliKey}
                 />
               ) : (
                 <GregorianCalendar
@@ -887,7 +1265,10 @@ export function BookingWizard({
                     setSelectedSlot(null);
                     if (allSlots[0]) {
                       setSelectedGregorianDateKey(
-                        formatGregorianDateKeyInZone(new Date(allSlots[0].isoUtc), nextTz),
+                        formatGregorianDateKeyInZone(
+                          new Date(allSlots[0].isoUtc),
+                          nextTz,
+                        ),
                       );
                     }
                   }}
@@ -898,6 +1279,10 @@ export function BookingWizard({
                   }}
                   selectedSlotId={selectedSlot?.id ?? null}
                   onSelectSlot={setSelectedSlot}
+                  todayKeyEn={formatGregorianDateKeyInZone(
+                    new Date(),
+                    clientTimezone,
+                  )}
                 />
               )}
 
@@ -981,7 +1366,12 @@ export function BookingWizard({
                 {/* Collision-free Flex PhoneInput */}
                 <div className="space-y-1.5">
                   <label htmlFor={phoneId} className="block text-sm font-medium text-ink">
-                    شماره موبایل (واتساپ / تماس) <span className="text-status-rejected-ink">*</span>
+                    شماره موبایل (واتساپ / تماس){" "}
+                    {track === "iran" ? (
+                      <span className="text-status-rejected-ink">*</span>
+                    ) : (
+                      <span className="text-ink-muted font-normal">(اختیاری)</span>
+                    )}
                   </label>
                   <PhoneInput
                     id={phoneId}
@@ -1067,32 +1457,33 @@ export function BookingWizard({
 
                 {/* Policy Checkbox */}
                 <div className="space-y-1.5 pt-1">
-                  <div className="flex items-start gap-3">
-                    <input
-                      id="booking-policy-check"
-                      type="checkbox"
-                      checked={policyAccepted}
-                      onChange={(e) => {
-                        setPolicyAccepted(e.target.checked);
-                        if (fieldErrors.policy) {
-                          setFieldErrors((prev) => ({ ...prev, policy: undefined }));
-                        }
-                      }}
-                      aria-invalid={Boolean(fieldErrors.policy)}
-                      className="mt-1 w-5 h-5 shrink-0 accent-accent rounded border-border-strong cursor-pointer"
-                    />
-                    <div className="text-sm text-ink-secondary leading-relaxed">
-                      <label htmlFor="booking-policy-check" className="cursor-pointer">
-                        قوانین لغو و تغییر زمان جلسه را مطالعه کردم و می‌پذیرم.
-                      </label>{" "}
-                      <button
-                        type="button"
-                        onClick={() => setPolicyModalOpen(true)}
-                        className="text-accent font-medium underline underline-offset-4 hover:text-accent-hover min-h-[44px] inline-flex items-center"
-                      >
-                        مشاهده قوانین
-                      </button>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <label
+                      htmlFor="booking-policy-check"
+                      className="min-h-[44px] inline-flex items-center gap-3 text-sm text-ink-secondary leading-relaxed cursor-pointer"
+                    >
+                      <input
+                        id="booking-policy-check"
+                        type="checkbox"
+                        checked={policyAccepted}
+                        onChange={(e) => {
+                          setPolicyAccepted(e.target.checked);
+                          if (fieldErrors.policy) {
+                            setFieldErrors((prev) => ({ ...prev, policy: undefined }));
+                          }
+                        }}
+                        aria-invalid={Boolean(fieldErrors.policy)}
+                        className="w-5 h-5 shrink-0 accent-accent rounded border-border-strong cursor-pointer"
+                      />
+                      <span>قوانین لغو و تغییر زمان جلسه را مطالعه کردم و می‌پذیرم.</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setPolicyModalOpen(true)}
+                      className="text-sm text-accent font-medium underline underline-offset-4 hover:text-accent-hover min-h-[44px] inline-flex items-center px-1"
+                    >
+                      مشاهده قوانین
+                    </button>
                   </div>
                   {fieldErrors.policy ? (
                     <p className="text-[13px] text-status-rejected-ink">
@@ -1112,17 +1503,20 @@ export function BookingWizard({
                 </button>
                 <button
                   type="button"
+                  disabled={otpBusy || holdBusy}
                   onClick={handleStep3Proceed}
-                  className="min-h-[48px] px-6 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover transition-colors"
+                  className="min-h-[48px] px-6 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted transition-colors"
                 >
-                  رزرو موقت ۱۵ دقیقه‌ای و ادامه به پرداخت
+                  {holdBusy || otpBusy
+                    ? "در حال بررسی..."
+                    : "رزرو موقت ۱۵ دقیقه‌ای و ادامه به پرداخت"}
                 </button>
               </div>
             </div>
           ) : null}
 
-          {/* STEP 4 (Strictly gated behind OTP verification + active hold!) */}
-          {step === 4 && isOtpVerified && heldBooking && paymentAccounts ? (
+          {/* STEP 4 (Strictly gated behind verified session + active hold from API) */}
+          {step === 4 && heldBooking ? (
             <div className="space-y-6">
               {/* 15-min Hold Countdown Banner */}
               {isHoldExpired ? (
@@ -1140,6 +1534,8 @@ export function BookingWizard({
                     type="button"
                     onClick={() => {
                       setHeldBooking(null);
+                      setSelectedSlot(null);
+                      setSlotsRefreshSeq((n) => n + 1);
                       setStep(2);
                     }}
                     className="min-h-[44px] px-4 rounded-xl bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors"
@@ -1172,7 +1568,7 @@ export function BookingWizard({
                 </div>
               )}
 
-              {/* Payment Destinations */}
+              {/* Payment Destinations (Strictly from POST /api/v1/bookings/hold) */}
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="text-lg sm:text-xl font-bold text-ink">
@@ -1191,90 +1587,71 @@ export function BookingWizard({
 
                 {track === "iran" ? (
                   <div className="rounded-2xl border border-border bg-surface p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-sm border-b border-border pb-3">
-                      <span className="text-ink-secondary">
-                        بانک مقصد:{" "}
-                        <strong className="text-ink">{paymentAccounts.iran.bankName}</strong>
-                      </span>
-                      <span className="text-ink-secondary">
-                        به نام:{" "}
-                        <strong className="text-ink">
-                          {paymentAccounts.iran.accountHolder}
-                        </strong>
-                      </span>
-                    </div>
-
-                    <CopyField
-                      label="شماره کارت (کارت‌به‌کارت)"
-                      value={paymentAccounts.iran.cardPan}
-                    />
-                    <CopyField
-                      label="شماره شبا"
-                      value={paymentAccounts.iran.sheba}
-                      monospace
-                    />
+                    {iranAccounts.length === 0 ? (
+                      <p className="text-sm text-ink-secondary">
+                        حساب بانکی فعالی برای مسیر داخل ایران ثبت نشده است.
+                      </p>
+                    ) : (
+                      iranAccounts.map((acc) => (
+                        <CopyField
+                          key={acc.id}
+                          label={acc.account_label}
+                          value={acc.destination_val}
+                          monospace={acc.method === "sheba"}
+                          hint={`به نام: ${acc.holder_name}`}
+                        />
+                      ))
+                    )}
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-border bg-surface p-4 space-y-4">
-                    <div className="grid grid-cols-3 gap-2">
-                      {(
-                        [
-                          { id: "paypal", label: "PayPal" },
-                          { id: "iban", label: "IBAN" },
-                          { id: "usdt", label: "USDT" },
-                        ] as const
-                      ).map((tab) => {
-                        const available = Boolean(paymentAccounts.abroad[tab.id]);
-                        if (!available) return null;
-                        const active = activeAbroadMethod === tab.id;
-                        return (
-                          <button
-                            key={tab.id}
-                            type="button"
-                            onClick={() => setAbroadMethod(tab.id)}
-                            className={`min-h-[44px] rounded-xl border text-sm font-medium transition-colors ${
-                              active
-                                ? "border-accent bg-accent-tint text-accent font-semibold"
-                                : "border-border bg-subtle/50 text-ink hover:bg-subtle"
-                            }`}
-                          >
-                            {tab.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {abroadAccounts.length === 0 ? (
+                      <p className="text-sm text-ink-secondary">
+                        حساب ارزی فعالی برای مسیر خارج از ایران ثبت نشده است.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(
+                            [
+                              { id: "paypal", label: "PayPal" },
+                              { id: "iban", label: "IBAN" },
+                              { id: "usdt", label: "USDT" },
+                            ] as const
+                          ).map((tab) => {
+                            const available = availableAbroadMethods.includes(tab.id);
+                            if (!available) return null;
+                            const active = activeAbroadMethod === tab.id;
+                            return (
+                              <button
+                                key={tab.id}
+                                type="button"
+                                onClick={() => setAbroadMethod(tab.id)}
+                                className={`min-h-[44px] rounded-xl border text-sm font-medium transition-colors ${
+                                  active
+                                    ? "border-accent bg-accent-tint text-accent font-semibold"
+                                    : "border-border bg-subtle/50 text-ink hover:bg-subtle"
+                                }`}
+                              >
+                                {tab.label}
+                              </button>
+                            );
+                          })}
+                        </div>
 
-                    {activeAbroadMethod === "paypal" && paymentAccounts.abroad.paypal ? (
-                      <div className="space-y-3">
-                        <CopyField
-                          label="آدرس PayPal"
-                          value={paymentAccounts.abroad.paypal.email}
-                          hint={paymentAccounts.abroad.paypal.holderName}
-                        />
-                      </div>
-                    ) : null}
-
-                    {activeAbroadMethod === "iban" && paymentAccounts.abroad.iban ? (
-                      <div className="space-y-3">
-                        <CopyField
-                          label={`شماره IBAN (${paymentAccounts.abroad.iban.bankName})`}
-                          value={paymentAccounts.abroad.iban.iban}
-                          monospace
-                          hint={`BIC: ${paymentAccounts.abroad.iban.bic}`}
-                        />
-                      </div>
-                    ) : null}
-
-                    {activeAbroadMethod === "usdt" && paymentAccounts.abroad.usdt ? (
-                      <div className="space-y-3">
-                        <CopyField
-                          label="آدرس کیف‌پول USDT"
-                          value={paymentAccounts.abroad.usdt.address}
-                          monospace
-                          hint={paymentAccounts.abroad.usdt.network}
-                        />
-                      </div>
-                    ) : null}
+                        {abroadAccounts
+                          .filter((a) => a.method === activeAbroadMethod)
+                          .map((acc) => (
+                            <CopyField
+                              key={acc.id}
+                              label={acc.account_label}
+                              value={acc.destination_val}
+                              monospace={acc.method === "iban" || acc.method === "usdt"}
+                              hint={acc.holder_name}
+                            />
+                          ))}
+                      </>
+                    )}
 
                     <CopyField
                       label="کد مرجع محرمانه (در شرح واریز بنویسید)"
@@ -1339,24 +1716,31 @@ export function BookingWizard({
                           )}{" "}
                           کیلوبایت
                         </p>
-                        <div className="w-full h-2 rounded-full bg-muted-surface overflow-hidden">
-                          <div
-                            className="h-full bg-accent transition-all duration-200"
-                            style={{ width: `${uploadProgress}%` }}
-                          />
-                        </div>
-                        <span className="block text-xs text-status-confirmed-ink">
-                          {uploadProgress >= 100
-                            ? "تصویر آماده ثبت نهایی است"
-                            : "در حال آماده‌سازی تصویر..."}
-                        </span>
+                        {submittingReceipt || uploadProgress > 0 ? (
+                          <div className="w-full h-2 rounded-full bg-muted-surface overflow-hidden">
+                            <div
+                              className="h-full bg-accent transition-all duration-200"
+                              style={{ width: `${uploadProgress}%` }}
+                            />
+                          </div>
+                        ) : null}
+                        {submittingReceipt ? (
+                          <span className="block text-xs text-accent">
+                            در حال آپلود امن تصویر رسید...
+                          </span>
+                        ) : !uploadError ? (
+                          <span className="block text-xs text-status-confirmed-ink">
+                            تصویر آماده ارسال و ثبت نهایی است
+                          </span>
+                        ) : null}
                       </div>
                     </div>
 
                     <button
                       type="button"
+                      disabled={submittingReceipt}
                       onClick={handleClearReceipt}
-                      className="min-h-[44px] px-3.5 rounded-xl border border-border-strong bg-surface text-ink text-xs sm:text-sm font-medium hover:bg-subtle transition-colors"
+                      className="min-h-[44px] px-3.5 rounded-xl border border-border-strong bg-surface text-ink text-xs sm:text-sm font-medium hover:bg-subtle disabled:opacity-50 transition-colors"
                     >
                       حذف و انتخاب تصویر دیگر
                     </button>
@@ -1393,11 +1777,13 @@ export function BookingWizard({
               <div className="hidden lg:block pt-2">
                 <button
                   type="button"
-                  disabled={isHoldExpired || !receiptPreviewUrl || uploadProgress < 100}
+                  disabled={isHoldExpired || !receiptFile || submittingReceipt}
                   onClick={handleSubmitReceipt}
                   className="w-full min-h-[48px] px-6 rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted disabled:cursor-not-allowed transition-colors"
                 >
-                  ثبت رسید و ارسال برای تایید درمانگر
+                  {submittingReceipt
+                    ? "در حال آپلود و ثبت رسید..."
+                    : "ثبت رسید و ارسال برای تایید درمانگر"}
                 </button>
               </div>
             </div>
@@ -1454,11 +1840,24 @@ export function BookingWizard({
               <dd className="text-end font-medium text-ink tabular-nums">
                 {selectedSlotDisplay ? (
                   <>
-                    <span className="block">
-                      <bdi dir="auto">{selectedSlotDisplay.primary}</bdi>
+                    <span
+                      dir={track === "abroad" ? "ltr" : undefined}
+                      className="inline-block"
+                    >
+                      {selectedSlotDisplay.primary}
                     </span>
                     <span className="block text-xs text-ink-muted mt-0.5">
                       {selectedSlotDisplay.secondary}
+                      {selectedSlotDisplay.timezoneLabel ? (
+                        <>
+                          {" "}
+                          (
+                          <span dir="ltr" className="inline-block tabular-nums">
+                            {selectedSlotDisplay.timezoneLabel}
+                          </span>
+                          )
+                        </>
+                      ) : null}
                     </span>
                   </>
                 ) : (
@@ -1535,13 +1934,6 @@ export function BookingWizard({
               placeholder="123456"
               className="w-full min-h-[48px] px-4 rounded-xl border border-border-strong bg-surface text-center text-lg font-bold tracking-[0.25em] text-ink tabular-nums focus:border-accent"
             />
-            <p className="text-xs text-ink-muted text-center">
-              (کد آزمایشی پیش‌نمایش:{" "}
-              <span dir="ltr" className="font-mono font-semibold text-ink">
-                123456
-              </span>
-              )
-            </p>
             {otpError ? (
               <p role="alert" className="text-[13px] text-status-rejected-ink text-center">
                 {otpError}
@@ -1557,11 +1949,8 @@ export function BookingWizard({
             </span>
             <button
               type="button"
-              disabled={otpSecondsLeft > 0}
-              onClick={() => {
-                setOtpSecondsLeft(120);
-                setOtpError(null);
-              }}
+              disabled={otpSecondsLeft > 0 || otpBusy}
+              onClick={() => void requestBookingOtp()}
               className="min-h-[44px] px-2 text-accent font-medium disabled:text-ink-muted disabled:cursor-not-allowed"
             >
               ارسال مجدد کد
@@ -1570,10 +1959,11 @@ export function BookingWizard({
 
           <button
             type="button"
+            disabled={otpBusy}
             onClick={handleVerifyOtp}
-            className="w-full min-h-[48px] rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover transition-colors"
+            className="w-full min-h-[48px] rounded-xl bg-accent text-white text-base font-medium hover:bg-accent-hover disabled:bg-muted-surface disabled:text-ink-muted transition-colors"
           >
-            تایید کد و قفل ۱۵ دقیقه‌ای زمان
+            {otpBusy ? "در حال تایید..." : "تایید کد و قفل ۱۵ دقیقه‌ای زمان"}
           </button>
         </div>
       </SheetModal>
@@ -1586,9 +1976,13 @@ export function BookingWizard({
         maxWidthClass="max-w-md"
       >
         <div className="space-y-3 text-sm leading-[1.8] text-ink-secondary">
-          <p>
-            • تغییر زمان یا لغو جلسه تا ۲۴ ساعت پیش از ساعت مقرر با هماهنگی درمانگر بدون جریمه امکان‌پذیر است.
-          </p>
+          {therapist.cancellationPolicyFa ? (
+            <p>{therapist.cancellationPolicyFa}</p>
+          ) : (
+            <p>
+              • تغییر زمان یا لغو جلسه تا ۲۴ ساعت پیش از ساعت مقرر با هماهنگی درمانگر بدون جریمه امکان‌پذیر است.
+            </p>
+          )}
           <p>
             • در صورت تاخیر مراجع در ورود به اتاق آنلاین، زمان جلسه صرفاً در بازه باقیمانده انجام می‌شود.
           </p>

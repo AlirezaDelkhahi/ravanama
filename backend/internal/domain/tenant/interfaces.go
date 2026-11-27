@@ -96,12 +96,15 @@ type TLSDomainChecker interface {
 
 // TenantService defines therapist profile, custom domain, and payment account operations.
 type TenantService interface {
+	GetTherapistByID(ctx context.Context, id string) (*Therapist, error)
+	GetTherapistByUserID(ctx context.Context, userID string) (*Therapist, error)
 	GetTherapistBySlug(ctx context.Context, slug string) (*Therapist, error)
 	GetTherapistByHostname(ctx context.Context, hostname string) (*Therapist, error)
 	ListDirectoryTherapists(ctx context.Context) ([]Therapist, error)
 	UpdateTherapistProfile(ctx context.Context, therapistID string, actorUserID string, update Therapist) (*Therapist, error)
 	RegisterCustomDomain(ctx context.Context, therapistID string, hostname string) (*TenantDomain, error)
 	VerifyCustomDomain(ctx context.Context, therapistID string, domainID string) (*TenantDomain, error)
+	ListTherapistDomains(ctx context.Context, therapistID string) ([]TenantDomain, error)
 	ListActivePaymentAccounts(ctx context.Context, therapistID string, track Track) ([]PaymentAccount, error)
 	UpsertPaymentAccount(ctx context.Context, account PaymentAccount) (*PaymentAccount, error)
 }
@@ -109,6 +112,7 @@ type TenantService interface {
 // TherapistRepository persists and retrieves tenant.therapists records.
 type TherapistRepository interface {
 	GetByID(ctx context.Context, id string) (*Therapist, error)
+	GetByUserID(ctx context.Context, userID string) (*Therapist, error)
 	GetBySlug(ctx context.Context, slug string) (*Therapist, error)
 	GetByVerifiedHostname(ctx context.Context, hostname string) (*Therapist, error)
 	ListOptedInDirectory(ctx context.Context) ([]Therapist, error)
@@ -117,13 +121,26 @@ type TherapistRepository interface {
 
 // DomainRepository persists custom domain verification records.
 type DomainRepository interface {
+	GetByID(ctx context.Context, id string) (*TenantDomain, error)
 	GetByHostname(ctx context.Context, hostname string) (*TenantDomain, error)
+	ListByTherapist(ctx context.Context, therapistID string) ([]TenantDomain, error)
 	Create(ctx context.Context, domain TenantDomain) error
 	MarkVerified(ctx context.Context, id string, isPrimary bool, verifiedAt time.Time) error
 }
 
 // PaymentAccountRepository persists track-scoped therapist payment accounts.
 type PaymentAccountRepository interface {
+	GetByID(ctx context.Context, id string) (*PaymentAccount, error)
 	ListActiveByTherapistAndTrack(ctx context.Context, therapistID string, track Track) ([]PaymentAccount, error)
 	Upsert(ctx context.Context, account PaymentAccount) (*PaymentAccount, error)
+}
+
+// TXTLookupPort resolves DNS TXT records for custom-domain ownership verification.
+type TXTLookupPort interface {
+	LookupTXT(ctx context.Context, hostname string) ([]string, error)
+}
+
+// Clock provides current timestamps for domain verification.
+type Clock interface {
+	Now() time.Time
 }

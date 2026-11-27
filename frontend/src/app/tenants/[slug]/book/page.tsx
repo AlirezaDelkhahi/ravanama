@@ -4,7 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { BookingWizard } from "@/components/booking/BookingWizard";
-import { getTherapistBySlug } from "@/lib/mock-data";
+import { fetchTherapistCatalog } from "@/lib/server-api";
 import { buildTenantHref, type TenantMode } from "@/lib/tenant-href";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const therapist = getTherapistBySlug(slug);
+  const therapist = await fetchTherapistCatalog(slug, { noStore: true });
   if (!therapist) {
     return { title: "رزرو جلسه" };
   }
@@ -36,7 +36,7 @@ export default async function TenantBookPage({
 }: TenantBookPageProps) {
   const { slug } = await params;
   const { rebook } = await searchParams;
-  const therapist = getTherapistBySlug(slug);
+  const therapist = await fetchTherapistCatalog(slug, { noStore: true });
 
   if (!therapist) {
     notFound();

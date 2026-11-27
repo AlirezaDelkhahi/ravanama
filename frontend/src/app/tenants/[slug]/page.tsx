@@ -15,7 +15,8 @@ import { MobileStickyBookingBar } from "@/components/tenant/MobileStickyBookingB
 import { SiteHeader } from "@/components/ui/SiteHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { formatCurrency, toPersianDigits } from "@/lib/jalali";
-import { getTherapistBySlug } from "@/lib/mock-data";
+import { buildTenantCanonicalUrl, buildTherapistJsonLd } from "@/lib/seo";
+import { fetchTherapistCatalog } from "@/lib/server-api";
 import { buildTenantHref, type TenantMode } from "@/lib/tenant-href";
 
 export const revalidate = 300;
@@ -24,26 +25,11 @@ interface TenantCatalogPageProps {
   params: Promise<{ slug: string }>;
 }
 
-function getCanonicalOrigin(
-  customDomain: string | null,
-  customDomainVerified: boolean,
-  hostHeader: string | null,
-  protoHeader: string | null,
-): { origin: string; isCustomPrimary: boolean } {
-  if (customDomainVerified && customDomain) {
-    return { origin: `https://${customDomain}`, isCustomPrimary: true };
-  }
-  const host = hostHeader ?? "ravannama.ir";
-  const rawProto = (protoHeader ?? "").split(",")[0]?.trim().toLowerCase();
-  const proto = rawProto === "http" ? "http" : "https";
-  return { origin: `${proto}://${host}`, isCustomPrimary: false };
-}
-
 export async function generateMetadata({
   params,
 }: TenantCatalogPageProps): Promise<Metadata> {
   const { slug } = await params;
-  const therapist = getTherapistBySlug(slug);
+  const therapist = await fetchTherapistCatalog(slug);
   if (!therapist) {
     return { title: "درمانگر یافت نشد" };
   }
@@ -51,22 +37,21 @@ export async function generateMetadata({
   const headerStore = await headers();
   const mode: TenantMode =
     headerStore.get("x-tenant-mode") === "custom" ? "custom" : "platform";
-  const { origin, isCustomPrimary } = getCanonicalOrigin(
-    therapist.customDomain,
-    therapist.customDomainVerified,
-    headerStore.get("host"),
-    headerStore.get("x-forwarded-proto"),
-  );
-  const canonicalPath = buildTenantHref("/", {
-    mode: isCustomPrimary ? "custom" : mode,
+  const canonicalUrl = buildTenantCanonicalUrl({
+    path: "/",
     slug,
+    mode,
+    customDomain: therapist.customDomain,
+    customDomainVerified: therapist.customDomainVerified,
+    hostHeader: headerStore.get("host"),
+    protoHeader: headerStore.get("x-forwarded-proto"),
   });
 
   return {
     title: `${therapist.displayName} | ${therapist.subtitle}`,
     description: therapist.bio,
     alternates: {
-      canonical: `${origin}${canonicalPath}`,
+      canonical: canonicalUrl,
     },
   };
 }
@@ -75,7 +60,7 @@ export default async function TenantCatalogPage({
   params,
 }: TenantCatalogPageProps) {
   const { slug } = await params;
-  const therapist = getTherapistBySlug(slug);
+  const therapist = await fetchTherapistCatalog(slug);
   if (!therapist) {
     notFound();
   }
@@ -93,39 +78,22 @@ export default async function TenantCatalogPage({
     .filter((p) => p.status === "published")
     .slice(0, 3);
 
-  const { origin, isCustomPrimary } = getCanonicalOrigin(
-    therapist.customDomain,
-    therapist.customDomainVerified,
-    headerStore.get("host"),
-    headerStore.get("x-forwarded-proto"),
-  );
-  const canonicalUrl = `${origin}${buildTenantHref("/", {
-    mode: isCustomPrimary ? "custom" : mode,
+  const canonicalUrl = buildTenantCanonicalUrl({
+    path: "/",
     slug,
-  })}`;
+    mode,
+    customDomain: therapist.customDomain,
+    customDomainVerified: therapist.customDomainVerified,
+    hostHeader: headerStore.get("host"),
+    protoHeader: headerStore.get("x-forwarded-proto"),
+  });
 
-  const jsonLd = {
-    "@context": "https://schema.org",
-    "@graph": [
-      {
-        "@type": "Person",
-        name: therapist.displayName,
-        jobTitle: therapist.subtitle,
-        description: therapist.bio,
-        url: canonicalUrl,
-      },
-      {
-        "@type": "ProfessionalService",
-        name: `${therapist.displayName} — مشاوره و روان‌درمانی آنلاین`,
-        url: canonicalUrl,
-        areaServed: ["IR", "Worldwide"],
-        provider: {
-          "@type": "Person",
-          name: therapist.displayName,
-        },
-      },
-    ],
-  };
+  const jsonLd = buildTherapistJsonLd({
+    displayName: therapist.displayName,
+    subtitle: therapist.subtitle,
+    bio: therapist.bio,
+    canonicalUrl,
+  });
 
   return (
     <>

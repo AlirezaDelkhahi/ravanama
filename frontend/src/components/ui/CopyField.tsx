@@ -46,13 +46,15 @@ export function CopyField({
       </div>
 
       <div className="flex items-center justify-between gap-2.5">
-        <div
-          dir="ltr"
-          className={`flex-1 min-w-0 text-start text-ink font-semibold tabular-nums select-all ${
-            monospace ? "font-mono text-sm break-all" : "text-sm sm:text-base break-words"
-          }`}
-        >
-          {value}
+        <div className="flex-1 min-w-0 text-start">
+          <span
+            dir="ltr"
+            className={`inline-block max-w-full text-start text-ink font-semibold tabular-nums select-all break-all [overflow-wrap:anywhere] ${
+              monospace ? "font-mono text-sm" : "text-sm sm:text-base"
+            }`}
+          >
+            {value}
+          </span>
         </div>
 
         <button

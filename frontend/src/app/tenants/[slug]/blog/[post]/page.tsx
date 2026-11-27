@@ -5,7 +5,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { BookOpen, Calendar, ChevronLeft, Clock } from "lucide-react";
 import { toPersianDigits } from "@/lib/jalali";
-import { getBlogPostForTherapist } from "@/lib/mock-data";
+import { buildBlogPostJsonLd, buildTenantCanonicalUrl } from "@/lib/seo";
+import { fetchTherapistBlogPost } from "@/lib/server-api";
 import { buildTenantHref, type TenantMode } from "@/lib/tenant-href";
 
 export const revalidate = 300;
@@ -18,7 +19,7 @@ export async function generateMetadata({
   params,
 }: TenantBlogPostPageProps): Promise<Metadata> {
   const { slug, post: postSlug } = await params;
-  const found = getBlogPostForTherapist(slug, postSlug);
+  const found = await fetchTherapistBlogPost(slug, postSlug);
   if (!found) {
     return { title: "مقاله یافت نشد" };
   }
@@ -27,28 +28,21 @@ export async function generateMetadata({
   const headerStore = await headers();
   const mode: TenantMode =
     headerStore.get("x-tenant-mode") === "custom" ? "custom" : "platform";
-  const isCustomPrimary = Boolean(
-    therapist.customDomainVerified && therapist.customDomain,
-  );
-  const host = isCustomPrimary
-    ? therapist.customDomain
-    : headerStore.get("host") ?? "ravannama.ir";
-  const rawProto = (headerStore.get("x-forwarded-proto") ?? "")
-    .split(",")[0]
-    ?.trim()
-    .toLowerCase();
-  const proto = isCustomPrimary ? "https" : rawProto === "http" ? "http" : "https";
-
-  const canonicalPath = buildTenantHref(`/blog/${post.slug}`, {
-    mode: isCustomPrimary ? "custom" : mode,
+  const canonicalUrl = buildTenantCanonicalUrl({
+    path: `/blog/${post.slug}`,
     slug,
+    mode,
+    customDomain: therapist.customDomain,
+    customDomainVerified: therapist.customDomainVerified,
+    hostHeader: headerStore.get("host"),
+    protoHeader: headerStore.get("x-forwarded-proto"),
   });
 
   return {
     title: post.seoTitle || post.title,
     description: post.seoDescription || post.excerpt,
     alternates: {
-      canonical: `${proto}://${host}${canonicalPath}`,
+      canonical: canonicalUrl,
     },
   };
 }
@@ -57,7 +51,7 @@ export default async function TenantBlogPostPage({
   params,
 }: TenantBlogPostPageProps) {
   const { slug, post: postSlug } = await params;
-  const found = getBlogPostForTherapist(slug, postSlug);
+  const found = await fetchTherapistBlogPost(slug, postSlug);
 
   if (!found) {
     notFound();
@@ -81,34 +75,25 @@ export default async function TenantBlogPostPage({
     Math.ceil(post.sections.length * 0.6) - 1,
   );
 
-  const isCustomPrimary = Boolean(
-    therapist.customDomainVerified && therapist.customDomain,
-  );
-  const host = isCustomPrimary
-    ? therapist.customDomain
-    : headerStore.get("host") ?? "ravannama.ir";
-  const rawProto = (headerStore.get("x-forwarded-proto") ?? "")
-    .split(",")[0]
-    ?.trim()
-    .toLowerCase();
-  const proto = isCustomPrimary ? "https" : rawProto === "http" ? "http" : "https";
-  const canonicalUrl = `${proto}://${host}${buildTenantHref(`/blog/${post.slug}`, {
-    mode: isCustomPrimary ? "custom" : mode,
+  const canonicalUrl = buildTenantCanonicalUrl({
+    path: `/blog/${post.slug}`,
     slug,
-  })}`;
+    mode,
+    customDomain: therapist.customDomain,
+    customDomainVerified: therapist.customDomainVerified,
+    hostHeader: headerStore.get("host"),
+    protoHeader: headerStore.get("x-forwarded-proto"),
+  });
 
-  const jsonLd = {
-    "@context": "https://schema.org",
-    "@type": "BlogPosting",
-    headline: post.title,
+  const jsonLd = buildBlogPostJsonLd({
+    title: post.title,
     description: post.seoDescription || post.excerpt,
     datePublished: post.publishedAtIso,
-    mainEntityOfPage: canonicalUrl,
-    author: {
-      "@type": "Person",
-      name: therapist.displayName,
-    },
-  };
+    canonicalUrl,
+    authorName: therapist.displayName,
+  });
+
+  const tocSections = post.sections.filter((s) => s.headingText.length > 0);
 
   return (
     <>
@@ -204,28 +189,28 @@ export default async function TenantBlogPostPage({
               </div>
 
               {/* Mobile Collapsible TOC */}
-              {post.sections.length > 0 ? (
-                <details className="lg:hidden rounded-2xl border border-border bg-surface overflow-hidden">
-                  <summary className="min-h-[48px] px-4 py-3 flex items-center justify-between cursor-pointer text-sm font-semibold text-ink list-none">
+              {tocSections.length > 0 ? (
+                <details className="lg:hidden rounded-2xl border border-border bg-surface overflow-hidden text-start">
+                  <summary className="min-h-[48px] px-4 py-3 flex items-center justify-between cursor-pointer text-sm font-semibold text-ink list-none [&::-webkit-details-marker]:hidden">
                     <span className="inline-flex items-center gap-2">
-                      <BookOpen className="w-4 h-4 text-accent" aria-hidden="true" />
+                      <BookOpen className="w-4 h-4 text-accent shrink-0" aria-hidden="true" />
                       <span>فهرست مطالب مقاله</span>
                     </span>
                     <span className="text-xs text-ink-muted">مشاهده</span>
                   </summary>
                   <nav
                     aria-label="فهرست بخش‌های مقاله"
-                    className="px-4 pb-4 pt-1 border-t border-border"
+                    className="px-4 pb-4 pt-2 border-t border-border text-start"
                   >
-                    <ul className="space-y-2 text-sm">
-                      {post.sections.map((section) => (
+                    <ul className="space-y-1 text-sm border-s-2 border-border ps-3 text-start list-none">
+                      {tocSections.map((section) => (
                         <li
                           key={section.headingId}
-                          className={section.level === 3 ? "ps-4" : ""}
+                          className={section.level === 3 ? "ps-3 w-full text-start" : "w-full text-start"}
                         >
                           <a
                             href={`#${section.headingId}`}
-                            className="min-h-[44px] inline-flex items-center text-ink-secondary hover:text-accent transition-colors"
+                            className="flex w-full text-start min-h-[44px] items-center py-1 text-ink-secondary hover:text-accent transition-colors leading-relaxed"
                           >
                             {section.headingText}
                           </a>
@@ -241,21 +226,23 @@ export default async function TenantBlogPostPage({
                 {post.sections.map((section, idx) => (
                   <div key={section.headingId} className="space-y-5">
                     <section className="space-y-4">
-                      {section.level === 2 ? (
-                        <h2
-                          id={section.headingId}
-                          className="scroll-mt-24 text-xl sm:text-2xl font-bold leading-[1.45] text-ink pt-2"
-                        >
-                          {section.headingText}
-                        </h2>
-                      ) : (
-                        <h3
-                          id={section.headingId}
-                          className="scroll-mt-24 text-lg sm:text-xl font-semibold leading-[1.5] text-ink pt-1"
-                        >
-                          {section.headingText}
-                        </h3>
-                      )}
+                      {section.headingText ? (
+                        section.level === 2 ? (
+                          <h2
+                            id={section.headingId}
+                            className="scroll-mt-24 text-xl sm:text-2xl font-bold leading-[1.45] text-ink pt-2"
+                          >
+                            {section.headingText}
+                          </h2>
+                        ) : (
+                          <h3
+                            id={section.headingId}
+                            className="scroll-mt-24 text-lg sm:text-xl font-semibold leading-[1.5] text-ink pt-1"
+                          >
+                            {section.headingText}
+                          </h3>
+                        )
+                      ) : null}
 
                       <div className="space-y-5 text-[17px] leading-[1.85] text-ink-secondary">
                         {section.paragraphs.map((paragraph, pIdx) => (
@@ -374,22 +361,22 @@ export default async function TenantBlogPostPage({
           </article>
 
           {/* Desktop Sticky TOC */}
-          {post.sections.length > 0 ? (
-            <aside className="hidden lg:block lg:col-span-4 lg:sticky lg:top-24 bg-surface border border-border rounded-2xl p-5 space-y-4">
+          {tocSections.length > 0 ? (
+            <aside className="hidden lg:block lg:col-span-4 lg:sticky lg:top-24 bg-surface border border-border rounded-2xl p-5 space-y-4 text-start">
               <h2 className="text-base font-bold text-ink inline-flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-accent" aria-hidden="true" />
+                <BookOpen className="w-4 h-4 text-accent shrink-0" aria-hidden="true" />
                 <span>فهرست مطالب مقاله</span>
               </h2>
               <nav aria-label="فهرست مطالب">
-                <ul className="space-y-2.5 text-sm border-s-2 border-border ps-3.5">
-                  {post.sections.map((section) => (
+                <ul className="space-y-1.5 text-sm border-s-2 border-border ps-3.5 text-start list-none">
+                  {tocSections.map((section) => (
                     <li
                       key={section.headingId}
-                      className={section.level === 3 ? "ps-3" : ""}
+                      className={section.level === 3 ? "ps-3 w-full text-start" : "w-full text-start"}
                     >
                       <a
                         href={`#${section.headingId}`}
-                        className="block py-1 text-ink-secondary hover:text-accent transition-colors leading-relaxed"
+                        className="flex w-full text-start min-h-[44px] items-center py-1 text-ink-secondary hover:text-accent transition-colors leading-relaxed"
                       >
                         {section.headingText}
                       </a>
