@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-label="پرتره دکتر امید نیک‌زاد">
+  <rect width="240" height="240" fill="#FAF8F5" />
+  <circle cx="120" cy="120" r="106" fill="#F2EFE9" />
+  <path d="M50 240c10-48 38-72 70-72s60 24 70 72H50z" fill="#475551" />
+  <path d="M98 168l22 28 22-28" fill="#E6F0EE" />
+  <rect x="107" y="140" width="26" height="32" rx="11" fill="#E4BEA4" />
+  <ellipse cx="120" cy="106" rx="34" ry="42" fill="#ECCAB2" />
+  <path d="M84 98c2-28 18-46 38-46s36 18 36 44c-10-12-22-18-36-18-16 0-28 6-38 20z" fill="#1F2927" />
+  <circle cx="107" cy="106" r="3" fill="#1F2927" />
+  <circle cx="133" cy="106" r="3" fill="#1F2927" />
+  <path d="M111 127c5 4 13 4 18 0" fill="none" stroke="#9A614A" stroke-width="2.4" stroke-linecap="round" />
+  <circle cx="120" cy="120" r="104" fill="none" stroke="#E3DDD3" stroke-width="2" />
+</svg>

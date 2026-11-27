@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
+import { getTherapistBySlug } from "@/lib/mock-data";
 import { buildTenantHref, type TenantMode } from "@/lib/tenant-href";
 
 function escapeXml(value: string): string {
@@ -24,9 +25,15 @@ export async function GET(
   const proto = rawProto.split(",")[0]?.trim().toLowerCase() === "http" ? "http" : "https";
   const origin = `${proto}://${host}`;
 
+  const therapist = getTherapistBySlug(slug);
+  const postUrls = (therapist?.blogPosts ?? [])
+    .filter((p) => p.status === "published")
+    .map((p) => `${origin}${buildTenantHref(`/blog/${p.slug}`, { mode, slug })}`);
+
   const urls = [
     `${origin}${buildTenantHref("/", { mode, slug })}`,
     `${origin}${buildTenantHref("/blog", { mode, slug })}`,
+    ...postUrls,
   ];
 
   const xml = [

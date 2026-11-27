@@ -17,7 +17,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="fa" dir="rtl" className={vazirmatn.variable}>
+    <html lang="fa" dir="rtl" className={`${vazirmatn.variable} overflow-x-clip`}>
       <body className="min-h-dvh bg-canvas text-ink font-sans antialiased overflow-x-clip">
         {children}
       </body>

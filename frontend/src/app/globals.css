@@ -20,6 +20,12 @@
   --accent-primary: #2D6A62;
   --accent-hover: #23554E;
   --accent-tint: #E6F0EE;
+  --accent-deep: #1D443F;
+
+  /* === Supporting Warm Editorial Accents === */
+  --warm-clay: #C97A5B;
+  --warm-clay-tint: #FBF2ED;
+  --warm-sand: #EFE6D8;
 
   /* === Semantic Status Tokens === */
   --status-confirmed-bg: #E8F3EC;
@@ -59,6 +65,11 @@
   --color-accent: var(--accent-primary);
   --color-accent-hover: var(--accent-hover);
   --color-accent-tint: var(--accent-tint);
+  --color-accent-deep: var(--accent-deep);
+
+  --color-clay: var(--warm-clay);
+  --color-clay-tint: var(--warm-clay-tint);
+  --color-sand: var(--warm-sand);
 
   --color-status-confirmed-bg: var(--status-confirmed-bg);
   --color-status-confirmed-ink: var(--status-confirmed-ink);
@@ -82,4 +93,37 @@
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }

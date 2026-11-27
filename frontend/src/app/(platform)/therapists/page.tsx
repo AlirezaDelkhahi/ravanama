@@ -1,24 +1,46 @@
-import Link from "next/link";
+import type { Metadata } from "next";
+import { TherapistsDirectoryClient } from "@/components/directory/TherapistsDirectoryClient";
+import { SiteFooter } from "@/components/ui/SiteFooter";
+import { SiteHeader } from "@/components/ui/SiteHeader";
+import { getDirectoryTherapists } from "@/lib/mock-data";
 
-export default function TherapistsDirectoryPage() {
+export const metadata: Metadata = {
+  title: "فهرست درمانگران روان‌نما",
+  description:
+    "جستجو و انتخاب روانشناس و درمانگر متخصص دارای پروانه رسمی برای جلسات آنلاین داخل ایران و خارج از کشور",
+};
+
+interface TherapistsDirectoryPageProps {
+  searchParams: Promise<{ topic?: string }>;
+}
+
+export default async function TherapistsDirectoryPage({
+  searchParams,
+}: TherapistsDirectoryPageProps) {
+  const { topic } = await searchParams;
+  const therapists = getDirectoryTherapists();
+
   return (
-    <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 lg:py-16 space-y-6">
-      <header className="flex items-center justify-between gap-4 border-b border-border pb-4">
-        <h1 className="text-2xl font-bold text-ink">فهرست درمانگران روان‌نما</h1>
-        <Link
-          href="/my-sessions"
-          className="min-h-[44px] inline-flex items-center px-4 rounded-xl border border-border bg-surface text-ink text-sm font-medium hover:bg-subtle transition-colors"
-        >
-          پیگیری نوبت
-        </Link>
-      </header>
+    <>
+      <SiteHeader variant="platform" activeNav="therapists" />
 
-      <section className="bg-surface border border-border rounded-2xl p-4 sm:p-6 space-y-3">
-        <h2 className="text-lg font-semibold text-ink">معرفی درمانگران عضو دایرکتوری</h2>
-        <p className="text-base text-ink-secondary">
-          درمانگرانی که نمایش عمومی در فهرست روان‌نما را فعال کرده باشند، در این بخش نمایش داده می‌شوند.
-        </p>
-      </section>
-    </main>
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 lg:py-12 space-y-6">
+        <header className="space-y-2">
+          <h1 className="text-2xl sm:text-3xl font-bold text-ink">
+            فهرست درمانگران روان‌نما
+          </h1>
+          <p className="text-sm sm:text-base text-ink-secondary leading-[1.7]">
+            متخصصانی که نمایش عمومی در فهرست روان‌نما را فعال کرده‌اند؛ برای مشاهده سوابق کامل، مقالات آموزشی و زمان‌های آزاد وارد صفحه هر درمانگر شوید.
+          </p>
+        </header>
+
+        <TherapistsDirectoryClient
+          therapists={therapists}
+          initialTopic={topic}
+        />
+      </main>
+
+      <SiteFooter />
+    </>
   );
 }

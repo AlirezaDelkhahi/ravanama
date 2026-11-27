@@ -11,10 +11,12 @@ const BYPASS_EXACT_OR_PREFIX = [
   "/_next",
   "/api",
   "/fonts",
+  "/images",
   "/favicon.ico",
   "/my-sessions",
   "/dashboard",
   "/therapists",
+  "/for-therapists",
 ];
 
 const RESERVED_SLUGS = new Set([
@@ -25,8 +27,10 @@ const RESERVED_SLUGS = new Set([
   "dashboard",
   "my-sessions",
   "therapists",
+  "for-therapists",
   "tenants",
   "fonts",
+  "images",
   "login",
   "logout",
   "auth",
@@ -80,8 +84,10 @@ export async function middleware(request: NextRequest) {
 
     if (SLUG_REGEX.test(candidateSlug) && !RESERVED_SLUGS.has(candidateSlug)) {
       const restPath = segments.length > 1 ? `/${segments.slice(1).join("/")}` : "";
-      const rewriteUrl = request.nextUrl.clone();
-      rewriteUrl.pathname = `/tenants/${candidateSlug}${restPath}`;
+      const rewriteUrl = new URL(
+        `/tenants/${candidateSlug}${restPath}${request.nextUrl.search}`,
+        request.url,
+      );
 
       const requestHeaders = new Headers(request.headers);
       requestHeaders.set("x-tenant-mode", "platform");
@@ -102,8 +108,11 @@ export async function middleware(request: NextRequest) {
   const customSlug = await resolveCustomDomainSlug(hostname);
   if (customSlug) {
     requestHeaders.set("x-tenant-slug", customSlug);
-    const rewriteUrl = request.nextUrl.clone();
-    rewriteUrl.pathname = `/tenants/${customSlug}${pathname === "/" ? "" : pathname}`;
+    const rewritePath = pathname === "/" ? "" : pathname;
+    const rewriteUrl = new URL(
+      `/tenants/${customSlug}${rewritePath}${request.nextUrl.search}`,
+      request.url,
+    );
     return NextResponse.rewrite(rewriteUrl, {
       request: { headers: requestHeaders },
     });
